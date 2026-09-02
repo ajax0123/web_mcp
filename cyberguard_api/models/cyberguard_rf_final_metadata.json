@@ -1,0 +1,33 @@
+{
+  "model_name": "CyberGuard Attack Detector",
+  "model_version": "1.0.0",
+  "algorithm": "RandomForestClassifier",
+  "n_estimators": 300,
+  "max_depth": 18,
+  "min_samples_leaf": 2,
+  "class_weight": "balanced",
+  "random_state": 42,
+  "feature_count": 32,
+  "processed_feature_count": 1037,
+  "threshold": 0.55,
+  "validation": {
+    "roc_auc": 0.8803,
+    "pr_auc": 0.3067,
+    "precision": 0.2897,
+    "recall": 0.7732,
+    "f1": 0.4214,
+    "fpr": 0.1386
+  },
+  "test": {
+    "roc_auc": 0.8820955691664703,
+    "pr_auc": 0.31276802587849334,
+    "precision": 0.29833354216263624,
+    "recall": 0.8213176957571576,
+    "f1": 0.43768382352941176,
+    "fpr": 0.13971707292732216,
+    "tn": 34481,
+    "fp": 5600,
+    "fn": 518,
+    "tp": 2381
+  }
+}
