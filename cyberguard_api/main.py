@@ -37,8 +37,8 @@ Isolation Forest
         ↓
 Anomaly Score
 
-Run:
-    uvicorn main:app --reload --port 8000
+Run (from the repo root, web_mcp/):
+    uvicorn cyberguard_api.main:app --host 0.0.0.0 --port 8000 --reload
 """
 
 from fastapi import FastAPI, HTTPException
@@ -49,7 +49,7 @@ import pandas as pd
 import joblib
 import os
 
-from services.network_detector import detect_network_attack
+from cyberguard_api.services.network_detector import detect_network_attack
 
 
 # ================================================================
@@ -64,6 +64,17 @@ app = FastAPI(
     ),
     version="1.1.0",
 )
+
+
+# ================================================================
+# WEBMCP REST BRIDGE (Phase 2)
+# Mounts /api/v1/* for webmcp_bridge.js and enables dev CORS
+# (localhost:3000 / localhost:5173).
+# ================================================================
+
+from cyberguard_api.routes_webmcp import register_webmcp_routes
+
+register_webmcp_routes(app)
 
 
 # ================================================================

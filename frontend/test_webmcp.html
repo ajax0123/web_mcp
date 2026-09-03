@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>CyberGuard WebMCP Smoke Test</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; background: #0f172a; color: #f8fafc; padding: 2rem; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 1.5rem; margin-bottom: 1.5rem; max-width: 800px; }
+    .badge { display: inline-block; padding: 0.25rem 0.6rem; border-radius: 4px; font-weight: 600; font-size: 0.85rem; }
+    .badge-native { background: #059669; color: #ffffff; }
+    .badge-fallback { background: #d97706; color: #ffffff; }
+    button { background: #3b82f6; color: white; border: none; padding: 0.6rem 1.2rem; border-radius: 6px; cursor: pointer; font-weight: 500; }
+    button:hover { background: #2563eb; }
+    pre { background: #0b0f19; padding: 1rem; border-radius: 6px; overflow-x: auto; color: #38bdf8; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+
+  <h1>🛡️ CyberGuard WebMCP Integration Test</h1>
+  
+  <div class="card">
+    <h3>Bridge Status</h3>
+    <p>Operational Mode: <span id="mode-badge" class="badge">Detecting...</span></p>
+    <p>Registered Tools: <code id="tool-count">0</code></p>
+    <button id="btn-run">Run End-to-End Investigation</button>
+  </div>
+
+  <div class="card">
+    <h3>Telemetry & Investigation Trace</h3>
+    <pre id="output">// Click "Run End-to-End Investigation" to trace tools...</pre>
+  </div>
+
+  <script type="module">
+    import { initWebMCP } from "./webmcp_bridge.js";
+
+    const API_BASE = "http://localhost:8000";
+    const bridge = initWebMCP(API_BASE);
+
+    // Update Status UI
+    const badge = document.getElementById("mode-badge");
+    badge.textContent = bridge.mode.toUpperCase();
+    badge.className = `badge ${bridge.mode === 'webmcp' ? 'badge-native' : 'badge-fallback'}`;
+    document.getElementById("tool-count").textContent = bridge.registeredTools.length || "6 (via Fallback Client)";
+
+    // Run Full Automated Investigation Workflow
+    document.getElementById("btn-run").addEventListener("click", async () => {
+      const output = document.getElementById("output");
+      output.textContent = "Executing investigation sequence...\n";
+
+      try {
+        // Step 1: Summary & Triage
+        output.textContent += "\n[1/4] Calling getSecuritySummary()...";
+        const summary = await bridge.client.getSecuritySummary();
+        output.textContent += "\n" + JSON.stringify(summary, null, 2);
+
+        output.textContent += "\n\n[2/4] Calling getSuspiciousUsers(limit=1)...";
+        const suspicious = await bridge.client.getSuspiciousUsers(1);
+        output.textContent += "\n" + JSON.stringify(suspicious, null, 2);
+        
+        const firstSuspect = suspicious.result ? suspicious.result[0] : suspicious[0];
+        if (!firstSuspect || !firstSuspect.user_id) throw new Error("no suspicious users returned");
+        const targetUser = firstSuspect.user_id;
+
+        // Step 2: Granular Inspection
+        output.textContent += `\n\n[3/4] Calling investigateUser(${targetUser}) & getUserRiskScore(${targetUser})...`;
+        const telemetry = await bridge.client.investigateUser(targetUser);
+        const risk = await bridge.client.getUserRiskScore(targetUser);
+        output.textContent += `\nTelemetry: ${JSON.stringify(telemetry, null, 2)}`;
+        output.textContent += `\nRisk Assessment: ${JSON.stringify(risk, null, 2)}`;
+
+        // Step 3: Attack Classification
+        output.textContent += `\n\n[4/4] Calling detectAttackPattern(${targetUser})...`;
+        const pattern = await bridge.client.detectAttackPattern(targetUser);
+        output.textContent += "\n" + JSON.stringify(pattern, null, 2);
+
+        output.textContent += "\n\n Investigation Complete. Telemetry Pipeline Verified!";
+      } catch (err) {
+        output.textContent += `\n\n[ERROR] Pipeline failure: ${err.message}`;
+      }
+    });
+  </script>
+</body>
+</html>
