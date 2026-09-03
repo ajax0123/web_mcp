@@ -1,0 +1,40 @@
+{
+    "model_type": "RandomForest + Bot Specialist",
+    "main_model": {
+        "algorithm": "RandomForestClassifier",
+        "n_estimators": 100,
+        "max_depth": 20,
+        "min_samples_leaf": 2,
+        "class_weight": "balanced_subsample"
+    },
+    "bot_specialist": {
+        "algorithm": "RandomForestClassifier",
+        "n_estimators": 100,
+        "max_depth": 18,
+        "min_samples_leaf": 3,
+        "class_weight": "balanced_subsample",
+        "threshold": 0.9
+    },
+    "num_features": 65,
+    "num_classes": 15,
+    "classes": [
+        "BENIGN",
+        "Bot",
+        "DDoS",
+        "DoS GoldenEye",
+        "DoS Hulk",
+        "DoS Slowhttptest",
+        "DoS slowloris",
+        "FTP-Patator",
+        "Heartbleed",
+        "Infiltration",
+        "PortScan",
+        "SSH-Patator",
+        "Web Attack \ufffd Brute Force",
+        "Web Attack \ufffd Sql Injection",
+        "Web Attack \ufffd XSS"
+    ],
+    "random_state": 42,
+    "training_rows": 2188124,
+    "integration_strategy": "Validate Bot predictions from main multiclass model using Bot specialist"
+}
