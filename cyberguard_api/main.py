@@ -1,9 +1,10 @@
 """
 CyberGuard ML Scoring API
-CyberGuard Attack Detector v1.0.0
+CyberGuard Attack Detector v1.1.0
 
 Architecture:
 
+LOGIN ATTACK DETECTION
 32 engineered features
         ↓
 Saved preprocessing pipeline
@@ -14,7 +15,27 @@ Final Random Forest
         ↓
 Attack Score
 
-Isolation Forest is provided as a separate behavioral anomaly endpoint.
+
+NETWORK ATTACK DETECTION
+65 network-flow features
+        ↓
+Saved median imputer
+        ↓
+Final Random Forest
+        ↓
+Attack Type
+        ↓
+Bot Specialist Validation
+
+
+BEHAVIORAL ANOMALY DETECTION
+13 behavioral features
+        ↓
+Saved scaler
+        ↓
+Isolation Forest
+        ↓
+Anomaly Score
 
 Run:
     uvicorn main:app --reload --port 8000
@@ -28,6 +49,8 @@ import pandas as pd
 import joblib
 import os
 
+from services.network_detector import detect_network_attack
+
 
 # ================================================================
 # APPLICATION
@@ -35,8 +58,11 @@ import os
 
 app = FastAPI(
     title="CyberGuard ML Scoring API",
-    description="Cybersecurity login attack and behavioral anomaly scoring API",
-    version="1.0.0",
+    description=(
+        "Cybersecurity ML API for login attack detection, "
+        "network attack classification, and behavioral anomaly detection."
+    ),
+    version="1.1.0",
 )
 
 
@@ -49,6 +75,8 @@ MODEL_DIR = os.path.join(
     "models"
 )
 
+
+# Login attack model
 RF_MODEL_PATH = os.path.join(
     MODEL_DIR,
     "cyberguard_rf_final.pkl"
@@ -59,6 +87,8 @@ PREPROCESSOR_PATH = os.path.join(
     "cyberguard_preprocessor_final.pkl"
 )
 
+
+# Behavioral anomaly model
 ISO_MODEL_PATH = os.path.join(
     MODEL_DIR,
     "isolation_forest_model.pkl"
@@ -94,15 +124,33 @@ def load_models():
 
     try:
 
-        rf_model = joblib.load(RF_MODEL_PATH)
+        # --------------------------------------------------------
+        # LOGIN RANDOM FOREST
+        # --------------------------------------------------------
+
+        rf_model = joblib.load(
+            RF_MODEL_PATH
+        )
+
+        # --------------------------------------------------------
+        # LOGIN PREPROCESSOR
+        # --------------------------------------------------------
 
         preprocessor = joblib.load(
             PREPROCESSOR_PATH
         )
 
+        # --------------------------------------------------------
+        # ISOLATION FOREST
+        # --------------------------------------------------------
+
         iso_forest = joblib.load(
             ISO_MODEL_PATH
         )
+
+        # --------------------------------------------------------
+        # BEHAVIOR SCALER
+        # --------------------------------------------------------
 
         scaler = joblib.load(
             SCALER_PATH
@@ -128,16 +176,20 @@ def load_models():
             f"Scaler: {type(scaler).__name__}"
         )
 
+        print("========================================")
+
     except Exception as e:
 
-        print("MODEL LOADING ERROR:")
+        print("========================================")
+        print("MODEL LOADING ERROR")
+        print("========================================")
         print(str(e))
 
         raise
 
 
 # ================================================================
-# SCHEMAS
+# LOGIN EVENT SCHEMA
 # ================================================================
 
 class LoginEvent(BaseModel):
@@ -196,6 +248,10 @@ class LoginEvent(BaseModel):
     user_is_first_event: int
 
 
+# ================================================================
+# LOGIN ATTACK RESULT
+# ================================================================
+
 class AttackAnalysisResult(BaseModel):
 
     user_id: str
@@ -207,6 +263,10 @@ class AttackAnalysisResult(BaseModel):
 
     risk_level: str
 
+
+# ================================================================
+# USER BEHAVIOR INPUT
+# ================================================================
 
 class UserBehaviorInput(BaseModel):
 
@@ -232,6 +292,10 @@ class UserBehaviorInput(BaseModel):
     logins_per_day: float
 
 
+# ================================================================
+# USER BEHAVIOR RESULT
+# ================================================================
+
 class UserBehaviorResult(BaseModel):
 
     user_id: str
@@ -242,7 +306,16 @@ class UserBehaviorResult(BaseModel):
 
 
 # ================================================================
-# HEALTH
+# NETWORK FLOW INPUT
+# ================================================================
+
+class NetworkFlowInput(BaseModel):
+
+    data: dict
+
+
+# ================================================================
+# ROOT
 # ================================================================
 
 @app.get("/")
@@ -250,10 +323,19 @@ def root():
 
     return {
         "service": "CyberGuard ML Scoring API",
-        "version": "1.0.0",
-        "status": "online"
+        "version": "1.1.0",
+        "status": "online",
+        "capabilities": [
+            "login_attack_detection",
+            "behavioral_anomaly_detection",
+            "network_attack_detection"
+        ]
     }
 
+
+# ================================================================
+# HEALTH
+# ================================================================
 
 @app.get("/health")
 def health():
@@ -262,16 +344,28 @@ def health():
         "status": "ok",
 
         "models_loaded": {
-            "random_forest": rf_model is not None,
-            "preprocessor": preprocessor is not None,
-            "isolation_forest": iso_forest is not None,
-            "scaler": scaler is not None
+
+            "random_forest": (
+                rf_model is not None
+            ),
+
+            "preprocessor": (
+                preprocessor is not None
+            ),
+
+            "isolation_forest": (
+                iso_forest is not None
+            ),
+
+            "scaler": (
+                scaler is not None
+            )
         }
     }
 
 
 # ================================================================
-# ATTACK DETECTION
+# LOGIN / IP ATTACK DETECTION
 # ================================================================
 
 @app.post(
@@ -308,17 +402,20 @@ def analyze_ip(events: List[LoginEvent]):
         df = pd.DataFrame(rows)
 
         # --------------------------------------------------------
-        # Ensure EXACT training feature order
+        # EXACT TRAINING FEATURE ORDER
         # --------------------------------------------------------
 
         feature_cols = [
+
             "login_hour",
             "Login Successful",
+
             "Country",
             "Device Type",
             "Browser Name and Version",
             "OS Name and Version",
 
+            # IP history
             "ip_total_logins",
             "ip_unique_users",
             "ip_failure_rate",
@@ -338,6 +435,7 @@ def analyze_ip(events: List[LoginEvent]):
             "ip_failure_rate_7d",
             "ip_unique_users_7d",
 
+            # User history
             "user_prev_logins",
             "user_prev_failed_logins",
             "user_prev_failure_rate",
@@ -353,16 +451,25 @@ def analyze_ip(events: List[LoginEvent]):
             "user_is_first_event"
         ]
 
-        # Rename API fields to training names
+        # --------------------------------------------------------
+        # Rename API fields → training fields
+        # --------------------------------------------------------
 
         df = df.rename(
             columns={
-                "country": "Country",
-                "device_type": "Device Type",
+
+                "country":
+                    "Country",
+
+                "device_type":
+                    "Device Type",
+
                 "browser_name_and_version":
                     "Browser Name and Version",
+
                 "os_name_and_version":
                     "OS Name and Version",
+
                 "login_successful":
                     "Login Successful"
             }
@@ -384,8 +491,10 @@ def analyze_ip(events: List[LoginEvent]):
             X_processed
         )[:, 1]
 
-        # Development operating threshold
-        # chosen from validation analysis
+        # --------------------------------------------------------
+        # DEVELOPMENT THRESHOLD
+        # --------------------------------------------------------
+
         THRESHOLD = 0.55
 
         results = []
@@ -397,7 +506,9 @@ def analyze_ip(events: List[LoginEvent]):
 
             score = float(score)
 
-            detected = score >= THRESHOLD
+            detected = (
+                score >= THRESHOLD
+            )
 
             results.append(
                 AttackAnalysisResult(
@@ -413,7 +524,9 @@ def analyze_ip(events: List[LoginEvent]):
 
                     attack_detected=detected,
 
-                    risk_level=risk_bucket(score)
+                    risk_level=risk_bucket(
+                        score
+                    )
                 )
             )
 
@@ -423,7 +536,9 @@ def analyze_ip(events: List[LoginEvent]):
 
         raise HTTPException(
             status_code=500,
-            detail=f"Attack analysis failed: {str(e)}"
+            detail=(
+                f"Attack analysis failed: {str(e)}"
+            )
         )
 
 
@@ -470,6 +585,10 @@ def get_user_risk_score(
             "logins_per_day"
         ]
 
+        # --------------------------------------------------------
+        # Convert request → DataFrame
+        # --------------------------------------------------------
+
         rows = [
             user.model_dump()
             for user in users
@@ -483,7 +602,9 @@ def get_user_risk_score(
         # SCALE
         # --------------------------------------------------------
 
-        X_scaled = scaler.transform(X)
+        X_scaled = scaler.transform(
+            X
+        )
 
         # --------------------------------------------------------
         # ISOLATION FOREST
@@ -510,7 +631,7 @@ def get_user_risk_score(
 
                     user_id=user.user_id,
 
-                    # Higher value = more anomalous
+                    # Higher = more anomalous
                     anomaly_score=round(
                         float(-raw_score),
                         4
@@ -528,7 +649,42 @@ def get_user_risk_score(
 
         raise HTTPException(
             status_code=500,
-            detail=f"Behavior analysis failed: {str(e)}"
+            detail=(
+                f"Behavior analysis failed: {str(e)}"
+            )
+        )
+
+
+# ================================================================
+# NETWORK ATTACK DETECTION
+# ================================================================
+
+@app.post("/detect_attack_pattern")
+def detect_attack_pattern_endpoint(
+    request: NetworkFlowInput
+):
+
+    try:
+
+        result = detect_network_attack(
+            request.data
+        )
+
+        return {
+
+            "status": "success",
+
+            "result": result
+        }
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Network attack detection failed: "
+                f"{str(e)}"
+            )
         )
 
 
@@ -536,7 +692,9 @@ def get_user_risk_score(
 # RISK BUCKET
 # ================================================================
 
-def risk_bucket(score: float) -> str:
+def risk_bucket(
+    score: float
+) -> str:
 
     if score >= 0.70:
 

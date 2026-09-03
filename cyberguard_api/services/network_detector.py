@@ -3,11 +3,18 @@ import pandas as pd
 from pathlib import Path
 
 
+# ================================================================
+# PATHS
+# ================================================================
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 MODEL_DIR = BASE_DIR / "models"
 
 
-# Load models
+# ================================================================
+# LOAD MODELS
+# ================================================================
+
 network_model = joblib.load(
     MODEL_DIR / "network_attack_model.pkl"
 )
@@ -25,134 +32,279 @@ label_encoder = joblib.load(
 )
 
 
-# EXACT 65 features used during training
-NETWORK_FEATURES = [
-    "Destination Port",
-    "Flow Duration",
-    "Total Fwd Packets",
-    "Total Backward Packets",
-    "Total Length of Fwd Packets",
-    "Total Length of Bwd Packets",
-    "Fwd Packet Length Max",
-    "Fwd Packet Length Min",
-    "Fwd Packet Length Mean",
-    "Fwd Packet Length Std",
-    "Bwd Packet Length Max",
-    "Bwd Packet Length Min",
-    "Bwd Packet Length Mean",
-    "Bwd Packet Length Std",
-    "Flow Bytes/s",
-    "Flow Packets/s",
-    "Flow IAT Mean",
-    "Flow IAT Std",
-    "Flow IAT Max",
-    "Flow IAT Min",
-    "Fwd IAT Total",
-    "Fwd IAT Mean",
-    "Fwd IAT Std",
-    "Fwd IAT Max",
-    "Fwd IAT Min",
-    "Bwd IAT Total",
-    "Bwd IAT Mean",
-    "Bwd IAT Std",
-    "Bwd IAT Max",
-    "Bwd IAT Min",
-    "Fwd PSH Flags",
-    "Bwd PSH Flags",
-    "Fwd URG Flags",
-    "Bwd URG Flags",
-    "Fwd Header Length",
-    "Bwd Header Length",
-    "Fwd Packets/s",
-    "Bwd Packets/s",
-    "Min Packet Length",
-    "Max Packet Length",
-    "Packet Length Mean",
-    "Packet Length Std",
-    "Packet Length Variance",
-    "FIN Flag Count",
-    "SYN Flag Count",
-    "RST Flag Count",
-    "PSH Flag Count",
-    "ACK Flag Count",
-    "URG Flag Count",
-    "CWE Flag Count",
-    "ECE Flag Count",
-    "Down/Up Ratio",
-    "Average Packet Size",
-    "Avg Fwd Segment Size",
-    "Avg Bwd Segment Size",
-    "Init_Win_bytes_forward",
-    "Init_Win_bytes_backward",
-    "act_data_pkt_fwd",
-    "min_seg_size_forward",
-    "Active Mean",
-    "Active Std",
-    "Active Max",
-    "Active Min",
-    "Idle Mean",
-    "Idle Std",
-    "Idle Max",
-    "Idle Min",
-]
+# ================================================================
+# GET EXACT TRAINING FEATURE ORDER
+# ================================================================
 
+if not hasattr(network_imputer, "feature_names_in_"):
+    raise RuntimeError(
+        "network_imputer.pkl does not contain "
+        "feature_names_in_. Cannot safely determine "
+        "training feature order."
+    )
+
+NETWORK_FEATURES = list(
+    network_imputer.feature_names_in_
+)
+
+
+# ================================================================
+# MODEL / FEATURE VALIDATION
+# ================================================================
+
+print("========================================")
+print("CyberGuard Network Detector")
+print("========================================")
+
+print(
+    f"Network features from imputer: "
+    f"{len(NETWORK_FEATURES)}"
+)
+
+print(
+    f"Network model features: "
+    f"{getattr(network_model, 'n_features_in_', 'unknown')}"
+)
+
+print(
+    f"Bot specialist features: "
+    f"{getattr(bot_specialist, 'n_features_in_', 'unknown')}"
+)
+
+print("----------------------------------------")
+print("EXACT TRAINING FEATURE ORDER")
+print("----------------------------------------")
+
+for index, feature in enumerate(
+    NETWORK_FEATURES,
+    start=1
+):
+    print(
+        f"{index:02d}. {feature}"
+    )
+
+print("========================================")
+
+
+if len(NETWORK_FEATURES) != 65:
+    raise RuntimeError(
+        f"Expected 65 network features, "
+        f"but imputer contains "
+        f"{len(NETWORK_FEATURES)} features."
+    )
+
+
+# ================================================================
+# LABEL VALIDATION
+# ================================================================
+
+print("Network classes:")
+
+for index, label in enumerate(
+    label_encoder.classes_
+):
+    print(
+        f"{index:02d}. {label}"
+    )
+
+print("========================================")
+
+
+# ================================================================
+# NETWORK ATTACK DETECTOR
+# ================================================================
 
 def detect_network_attack(flow_data: dict):
 
-    # Keep only trained features in exact order
-    row = {
-        feature: flow_data.get(feature)
+    # ------------------------------------------------------------
+    # Validate input type
+    # ------------------------------------------------------------
+
+    if not isinstance(flow_data, dict):
+        raise ValueError(
+            "flow_data must be a JSON object/dictionary."
+        )
+
+    # ------------------------------------------------------------
+    # Find missing features
+    # ------------------------------------------------------------
+
+    missing_features = [
+        feature
         for feature in NETWORK_FEATURES
-    }
+        if feature not in flow_data
+    ]
 
-    X = pd.DataFrame([row], columns=NETWORK_FEATURES)
+    if missing_features:
 
-    # Convert values to numeric
-    X = X.apply(pd.to_numeric, errors="coerce")
+        raise ValueError(
+            "Missing network features: "
+            + ", ".join(missing_features)
+        )
 
-    # Apply the SAME imputer used during training
-    X_imputed = network_imputer.transform(X)
+    # ------------------------------------------------------------
+    # Detect unexpected features
+    # ------------------------------------------------------------
 
-    # Main multiclass model
-    probabilities = network_model.predict_proba(X_imputed)[0]
+    unexpected_features = [
+        feature
+        for feature in flow_data
+        if feature not in NETWORK_FEATURES
+    ]
 
-    predicted_index = probabilities.argmax()
+    if unexpected_features:
 
-    predicted_attack = label_encoder.inverse_transform(
-        [predicted_index]
-    )[0]
+        print(
+            "Warning: unexpected input features:"
+        )
 
-    model_score = float(probabilities[predicted_index])
+        for feature in unexpected_features:
+            print(
+                f"  - {feature}"
+            )
 
-    # Bot specialist
-    bot_score = float(
-        bot_specialist.predict_proba(X_imputed)[0][1]
+    # ------------------------------------------------------------
+    # Build DataFrame in EXACT training order
+    # ------------------------------------------------------------
+
+    row = {}
+
+    for feature in NETWORK_FEATURES:
+        row[feature] = flow_data[feature]
+
+    X = pd.DataFrame(
+        [row],
+        columns=NETWORK_FEATURES
     )
 
-    # Validate Bot predictions using specialist
-    if predicted_attack == "Bot" and bot_score < 0.90:
+    # ------------------------------------------------------------
+    # Verify feature order before imputation
+    # ------------------------------------------------------------
+
+    actual_order = X.columns.tolist()
+
+    if actual_order != NETWORK_FEATURES:
+
+        raise RuntimeError(
+            "Internal feature ordering error. "
+            "Input columns do not match the "
+            "training feature order."
+        )
+
+    # ------------------------------------------------------------
+    # Convert all features to numeric
+    # ------------------------------------------------------------
+
+    X = X.apply(
+        pd.to_numeric,
+        errors="coerce"
+    )
+
+    # ------------------------------------------------------------
+    # Apply SAME imputer used during training
+    # ------------------------------------------------------------
+
+    X_imputed = network_imputer.transform(X)
+
+    # ------------------------------------------------------------
+    # Main multiclass Random Forest
+    # ------------------------------------------------------------
+
+    probabilities = network_model.predict_proba(
+        X_imputed
+    )[0]
+
+    predicted_index = int(
+        probabilities.argmax()
+    )
+
+    predicted_attack = (
+        label_encoder.inverse_transform(
+            [predicted_index]
+        )[0]
+    )
+
+    model_score = float(
+        probabilities[predicted_index]
+    )
+
+    # ------------------------------------------------------------
+    # Bot specialist
+    # ------------------------------------------------------------
+
+    bot_probabilities = (
+        bot_specialist.predict_proba(
+            X_imputed
+        )[0]
+    )
+
+    bot_score = float(
+        bot_probabilities[1]
+    )
+
+    # ------------------------------------------------------------
+    # Bot validation
+    # ------------------------------------------------------------
+
+    bot_override = False
+
+    if (
+        predicted_attack == "Bot"
+        and bot_score < 0.90
+    ):
 
         non_bot_indices = [
-            i for i, label in enumerate(label_encoder.classes_)
+            index
+            for index, label
+            in enumerate(
+                label_encoder.classes_
+            )
             if label != "Bot"
         ]
 
         best_non_bot_index = max(
             non_bot_indices,
-            key=lambda i: probabilities[i]
+            key=lambda index:
+                probabilities[index]
         )
 
-        predicted_attack = label_encoder.inverse_transform(
-            [best_non_bot_index]
-        )[0]
+        predicted_attack = (
+            label_encoder.inverse_transform(
+                [best_non_bot_index]
+            )[0]
+        )
 
         model_score = float(
-            probabilities[best_non_bot_index]
+            probabilities[
+                best_non_bot_index
+            ]
         )
 
+        bot_override = True
+
+    # ------------------------------------------------------------
+    # Return result
+    # ------------------------------------------------------------
+
     return {
-        "attack_type": predicted_attack,
-        "model_score": round(model_score, 4),
-        "bot_specialist_score": round(bot_score, 4),
-        "is_attack": predicted_attack != "BENIGN",
+
+        "attack_type": str(
+            predicted_attack
+        ),
+
+        "model_score": round(
+            model_score,
+            4
+        ),
+
+        "bot_specialist_score": round(
+            bot_score,
+            4
+        ),
+
+        "bot_override": bot_override,
+
+        "is_attack": (
+            predicted_attack != "BENIGN"
+        )
     }
