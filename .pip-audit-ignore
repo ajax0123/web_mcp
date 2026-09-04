@@ -1,0 +1,48 @@
+# pip-audit deferral list — consumed by the "Dependency CVE audit" CI step.
+#
+# Format: one advisory ID per line. Lines starting with '#' and blank lines are
+# stripped before the IDs are passed as `--ignore-vuln` flags.
+#
+# RULE: every entry MUST carry (a) the fix version, (b) why it is not being
+# taken now, and (c) the reachability posture. Entries are reviewed on every
+# dependency bump; delete the line once the pin clears the advisory.
+#
+# ---------------------------------------------------------------------------
+# starlette 0.38.6  (transitively pinned by fastapi==0.115.0, which caps
+#                    starlette <0.39; a full fix needs starlette >=1.3.1, i.e.
+#                    fastapi >=0.120 — a breaking web-framework major bump that
+#                    needs its own PR + full TestClient/deploy re-validation).
+#                    Reachability: the API serves no multipart/form endpoints
+#                    (see cyberguard_api/requirements.txt), so the form-parser
+#                    advisories are not on a reachable path.
+# ---------------------------------------------------------------------------
+PYSEC-2026-161
+PYSEC-2026-248
+PYSEC-2026-249
+PYSEC-2026-1941
+PYSEC-2026-1943
+PYSEC-2026-2280
+PYSEC-2026-2281
+# ---------------------------------------------------------------------------
+# fastmcp 2.3.4  (fix spans 2.13.0 / 2.14.x / 3.2.0; fastmcp 2->3 is an API
+#                 rewrite that also swaps the dependency tree — httpx2, mcp 2.x,
+#                 Authlib, joserfc. Deferred to a dedicated MCP-stack upgrade PR
+#                 with a real stdio handshake test.
+#                 Reachability: cyberguard_mcp_server.py runs over local stdio,
+#                 not the network-exposed streamable-HTTP transport most of
+#                 these advisories concern.
+# ---------------------------------------------------------------------------
+PYSEC-2026-1364
+PYSEC-2026-1365
+PYSEC-2026-2474
+PYSEC-2026-2475
+PYSEC-2026-2476
+GHSA-rcfx-77hg-w2wv
+# ---------------------------------------------------------------------------
+# mcp 1.12.4  (transitive under fastmcp; fix needs mcp >=1.28.1, which fastmcp
+#              2.3.4 will not resolve. Moves together with the fastmcp bump
+#              above. Same local-stdio reachability posture.
+# ---------------------------------------------------------------------------
+PYSEC-2026-1617
+PYSEC-2026-3482
+PYSEC-2026-3483

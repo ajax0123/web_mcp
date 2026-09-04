@@ -76,4 +76,6 @@ jobs:
       - name: Dependency CVE audit
         run: |
           python -m pip install --quiet 'pip-audit==2.7.3'
-          pip-audit -r requirements.lock $( [ -f .pip-audit-ignore ] && sed 's/^/--ignore-vuln /' .pip-audit-ignore )
+          # .pip-audit-ignore holds one advisory ID per line; '#' comment lines and
+          # blank lines are stripped so each deferral can carry a rationale in-file.
+          pip-audit -r requirements.lock $( [ -f .pip-audit-ignore ] && grep -vE '^[[:space:]]*(#|$)' .pip-audit-ignore | sed 's/^/--ignore-vuln /' )

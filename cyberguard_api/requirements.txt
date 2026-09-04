@@ -7,10 +7,15 @@
 #     .venv/bin/pip freeze --all > cyberguard_api/requirements.lock
 #
 # CVE / freshness notes:
-#   * pyjwt bumped 2.8.0 -> 2.10.1 (post CVE-2024-53861 issuer-check bypass fix).
-#   * starlette 0.38.6 is what fastapi 0.115.0 resolves; the app serves no
-#     multipart/form endpoints, so CVE-2024-47874 is not reachable. Revisit on
-#     the next fastapi bump.
+#   * pyjwt bumped 2.8.0 -> 2.10.1 -> 2.13.0 (clears the 2026 alg-confusion /
+#     JWK-parsing advisories; API-compatible, HS256 encode/decode only).
+#   * cryptography bumped 43.0.1 -> 50.0.1 (clears PYSEC-2026-35/1284/2141/
+#     3552/3553/3554 + GHSA-537c-gmf6-5ccf). Only used for offline Ed25519
+#     manifest-signature verification; the primitives are unchanged since 2.x.
+#   * starlette / fastmcp / mcp carry advisories whose fixes require breaking
+#     major upgrades (fastapi<->starlette coupling; fastmcp 2->3/4 rewrite).
+#     Deferred to a dedicated dependency-bump PR with full runtime validation;
+#     the specific IDs and rationale are tracked in ../.pip-audit-ignore.
 
 # --- web framework ---
 fastapi==0.115.0
@@ -26,7 +31,7 @@ slowapi==0.1.9
 prometheus-client==0.21.0
 
 # --- model manifest signature verification (PP-M1, optional-but-pinned) ---
-cryptography==43.0.1
+cryptography==50.0.1
 
 # --- ML stack ---
 scikit-learn==1.6.1
@@ -37,7 +42,7 @@ joblib==1.4.2
 # --- runtime deps ---
 psutil==5.9.8
 httpx==0.28.1
-pyjwt==2.10.1
+pyjwt==2.13.0
 redis==5.0.1
 
 # --- MCP stdio server ---
