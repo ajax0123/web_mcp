@@ -64,7 +64,11 @@ jobs:
         run: PYTHON=python scripts/fresh_clone_check.sh
 
       - name: Tests
-        run: python -m pytest
+        run: |
+          # pytest is the `dev` extra in pyproject.toml, not part of the
+          # hash-locked runtime set installed above; pin it to the same version.
+          python -m pip install --quiet 'pytest==8.3.3'
+          python -m pytest
 
       - name: Docker image builds (A-H1)
         run: docker build -t cyberguard-api:ci .
