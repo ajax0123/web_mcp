@@ -103,8 +103,9 @@ print("Network classes:")
 for index, label in enumerate(
     label_encoder.classes_
 ):
+    safe_label = str(label).encode("ascii", "replace").decode("ascii")
     print(
-        f"{index:02d}. {label}"
+        f"{index:02d}. {safe_label}"
     )
 
 print("========================================")
