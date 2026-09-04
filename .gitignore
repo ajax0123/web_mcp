@@ -1,6 +1,28 @@
-.venv/
+# --- Python ---
 __pycache__/
-*.pyc
-.env
-.pytest_cache/
+*.py[cod]
 *.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# --- Dependency lock: regenerated per build (scripts/lock.sh); the intentionally
+#     committed one is requirements.committed.lock (CI diffs against it). ---
+requirements.lock
+
+# --- Virtualenvs (rebuild from cyberguard_api/requirements.txt; see scripts/bootstrap.sh) ---
+.venv/
+.venv-*/
+venv/
+env/
+
+# --- Secrets / local config ---
+.env
+.env.*
+!.env.example
+
+# --- OS / editor cruft ---
+.DS_Store
+*.swp

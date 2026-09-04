@@ -59,10 +59,10 @@ Built across four phases:
 │          ┌─────────┘                                    └──────────┐             │
 │          ▼                                                         ▼             │
 │   TELEMETRY STORE                                     ML INFERENCE  models/*.pkl │
-│   MOCK_TELEMETRY (routes_webmcp.py)                   • cyberguard_rf_final.pkl  │
-│     USR-402: anomaly 0.93, 47 fail / 1 ok,              login attack RF          │
-│              3 IPs, geo-velocity, 4 devices             32 feat → 1037, thr 0.55 │
-│     USR-108: anomaly 0.68                             • isolation_forest_model   │
+│   MOCK_TELEMETRY — services/telemetry.py (10 users)   • cyberguard_rf_final.pkl  │
+│     USR-205 0.96 BF · USR-402 0.93 ATO · USR-319 0.88   login attack RF          │
+│     CS · USR-512 0.74 · USR-108 0.68 flagged (≥0.60)    32 feat → 1037, thr 0.55 │
+│     + USR-620/733/814/905/101  medium → normal        • isolation_forest_model   │
 │                                                        behavioral anomaly, 13ft │
 │   (investigate_user / get_user_risk_score /          • network_attack_model +   │
 │    heuristic detect_attack_pattern read here)          bot_specialist_model     │
@@ -131,27 +131,36 @@ Bridge contract sandbox: **http://localhost:5173/test_webmcp.html**.
 
 1. **Open the dashboard.** Header pill reads `REST FALLBACK` in a normal browser
    (there is no `navigator.modelContext`); it reads `NATIVE WebMCP` only inside a
-   WebMCP-enabled agent runtime. Security metrics load: Monitored 150, Flagged 2,
-   Status `ELEVATED_RISK`. Left panel lists USR-402 (0.93) and USR-108 (0.68).
+   WebMCP-enabled agent runtime. Security metrics load: Monitored **10**, Flagged
+   **5**, Status `ELEVATED_RISK`. Left panel lists the top 5 by anomaly score —
+   USR-205 (0.96), USR-402 (0.93), USR-319 (0.88), USR-512 (0.74), USR-108 (0.68).
 
 2. **Click "Auto-Triage & Investigate Worst Offender."** One call to
-   `bridge.runInvestigation(null)` → `POST /api/v1/agent/investigate`.
+   `bridge.runInvestigation(null)` → `POST /api/v1/agent/investigate`. Triage
+   ranks the pool and auto-selects **USR-205** (highest anomaly score, 0.96).
 
 3. **Watch the stepper.** DISCOVER → INSPECT → CORRELATE → ATTRIBUTE → REPORT
    light up as the audit trace replays. Each step has `input` / `output` JSON you
    can expand in the terminal pane.
 
-4. **Read the findings (right panel).**
+4. **Read the auto-triage findings (right panel).**
+   - Threat badge: **Brute Force** · **CRITICAL** · **88% confidence**
+   - Tiles: Failed Logins **38** · Successful **0** · Unique IPs **1** ·
+     Anomaly Score **0.96** · MITRE **T1110.001** · Risk Score **96**
+   - Incident report `INC-2026-<hex>`, rendered from Markdown.
+
+5. **Flagship Account Takeover showcase.** Type `USR-402` → *Investigate* (or click
+   the row). DISCOVER shows *skipped — target supplied*; steps 3–6 run.
    - Threat badge: **Account Takeover (ATO)** · **CRITICAL** · **93% confidence**
    - Tiles: Failed Logins **47** · Successful **1** · Unique IPs **3** ·
      Anomaly Score **0.93** · MITRE **T1078.004** · Risk Score **93**
-   - Incident report `INC-2026-0941`, rendered from Markdown.
 
-5. **Click "Copy Report."** The full executive incident report is on the clipboard,
+6. **Click "Copy Report."** The full executive incident report is on the clipboard,
    ready to paste into a ticket.
 
-6. **Targeted run.** Type `USR-108` → *Investigate* (or click the row). DISCOVER
-   shows *skipped — target supplied*; the trace runs steps 3–6 only.
+7. **Other targeted runs.** Any of the 10 seeded IDs works — e.g. `USR-319`
+   (Credential Stuffing, `T1110.004`), `USR-108` (Suspicious Authentication),
+   `USR-905` (Normal baseline). The trace runs steps 3–6 only.
 
 If the backend agent endpoint is unreachable, `runInvestigation()` transparently
 falls back to **client-side sequential tool chaining** (same six tools, same
@@ -178,13 +187,17 @@ response shape); the footer then reads `client fallback chain` and a banner note
 
 > **[0:35–1:10] — The Demonstration**
 > *(click "Auto-Triage & Investigate Worst Offender")*
-> "One click. The agent runs the lifecycle autonomously —"
+> "One click. The agent triages a 10-user pool, picks the worst offender —
+> **USR-205**, anomaly **0.96** — and runs the lifecycle autonomously —"
 > *(point at the stepper animating)*
 > "**DISCOVER** the suspicious set, **INSPECT** the top user's telemetry,
-> **CORRELATE** the ML risk score, **ATTRIBUTE** the attack pattern, **REPORT**.
-> USR-402: anomaly score **0.93**, classified **Account Takeover**, **93%
+> **CORRELATE** the ML risk score, **ATTRIBUTE** the attack pattern, **REPORT** —
+> thirty-eight failed logins, no success, single source IP: **Brute Force**,
+> **CRITICAL**, MITRE **T1110.001**."
+> *(type `USR-402`, click Investigate — the flagship case)*
+> "Or point it at a specific account. USR-402: **Account Takeover**, **93%
 > confidence**, MITRE **T1078.004** — forty-seven failed logins then one success,
-> impossible travel across three networks, four new devices. Every step is in the
+> geo-velocity flag set, three source IPs, four new devices. Every step is in the
 > audit trace with its tool inputs and outputs."
 > *(click "Copy Report")*
 > "And the analyst walks away with a formatted executive incident report in the
@@ -277,10 +290,22 @@ this repo. The three roles below plug into fixed contracts.
 # backend up, all four models loaded
 curl -s localhost:8000/health | grep -q '"random_forest":true' && echo OK
 
-# full autonomous pipeline, no human input
+# 10-user pool surfaced by the summary
+curl -s localhost:8000/api/v1/security/summary
+# -> {"monitored_users":10,"flagged_suspicious_users":5,"high_severity_alerts":3,"status":"ELEVATED_RISK"}
+
+# full autonomous pipeline, no human input — auto-triage picks the worst offender
 curl -s -X POST localhost:8000/api/v1/agent/investigate \
   | python3 -c 'import sys,json; d=json.load(sys.stdin); \
-    assert d["status"]=="COMPLETE" and d["target_user_id"]=="USR-402"; \
+    assert d["status"]=="COMPLETE" and d["target_user_id"]=="USR-205"; \
+    print(d["assessment"]["threat_classification"], d["assessment"]["severity"], \
+          str(d["assessment"]["confidence_pct"])+"%")'
+# -> Brute Force CRITICAL 88%
+
+# flagship Account Takeover showcase — explicit target
+curl -s -X POST localhost:8000/api/v1/agent/investigate -d '{"user_id":"USR-402"}' \
+  -H 'content-type: application/json' \
+  | python3 -c 'import sys,json; d=json.load(sys.stdin); \
     print(d["assessment"]["threat_classification"], d["assessment"]["severity"], \
           str(d["assessment"]["confidence_pct"])+"%")'
 # -> Account Takeover (ATO) CRITICAL 93%

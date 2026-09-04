@@ -9,7 +9,10 @@
   "random_state": 42,
   "feature_count": 32,
   "processed_feature_count": 1037,
-  "threshold": 0.55,
+  "threshold": 0.70,
+  "threshold_env_var": "LOGIN_THRESHOLD",
+  "threshold_note": "Default operating point raised from the 0.55 development threshold to 0.70 to cut the false-positive rate (precision was ~0.30 at 0.55). Override at runtime with the LOGIN_THRESHOLD env var. The API returns the raw probability and the applied threshold on every prediction so consumers can set their own alert boundary.",
+  "metrics_measured_at_threshold": 0.55,
   "validation": {
     "roc_auc": 0.8803,
     "pr_auc": 0.3067,

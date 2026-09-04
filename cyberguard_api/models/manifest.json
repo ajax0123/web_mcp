@@ -1,0 +1,22 @@
+{
+  "algorithm": "sha256",
+  "note": "Digests of the pickled model artifacts. verify_artifact() checks a file against this map before joblib.load() runs (audit findings C-4 / M-3). In production, serve this file from a read-only path via CYBERGUARD_MODEL_MANIFEST and sign it (CYBERGUARD_MODEL_MANIFEST_SIG).",
+  "environment": {
+    "python": "3.12",
+    "sklearn": "1.6.1",
+    "numpy": "2.1.2",
+    "scipy": "1.14.1",
+    "joblib": "1.4.2"
+  },
+  "environment_note": "Interpreter + library versions the .pkl artifacts were serialised with. check_serialization_env() compares the running process against this to catch cross-version unpickle hazards (PP-C5); a scikit-learn minor mismatch is a hard startup failure in production. Regenerate after retraining with `python -m cyberguard_api.services.model_loader --generate` on the build image.",
+  "artifacts": {
+    "bot_specialist_model.pkl": "524ae84449c4adfa6158b7995542c1048591f6295f1227e6d533d27f168ececd",
+    "cyberguard_preprocessor_final.pkl": "6056ef678c69b7cf81b877d5fc18dfb91d817bbb8bea7ff7a46dd7257b6826f5",
+    "cyberguard_rf_final.pkl": "eac6e4b7b4838651f79e910b4727469bd34cd9872e51be7bd8f74303e708c098",
+    "feature_scaler.pkl": "d2fa117f1eecd79c3c238d719cf78b5340eca132e1652aae02f4a5f7e2f24557",
+    "isolation_forest_model.pkl": "d0132843314e31ac3c7d7392175736f4708020de1091181c68a14dee0f82ae78",
+    "network_attack_model.pkl": "8bf1e35e80726b4c0fdd2f0203416424ba03b05e390ec98655ded8c54496d794",
+    "network_imputer.pkl": "3d9f1b00f60ab148d23fe9f166fffef762013b148bd189c4981001eb202af898",
+    "network_label_encoder.pkl": "18e6b5380492245a70da1bbead8ea6e28be79fc3a1d6a933c94405f6348e3f92"
+  }
+}

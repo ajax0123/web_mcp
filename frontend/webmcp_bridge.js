@@ -786,7 +786,9 @@ function clientRecommendations(attack, risk, telemetry) {
 function renderIncidentMarkdown(userId, telemetry, risk, attack, incident) {
   const t = telemetry || {};
   const anomaly = t.anomaly_score ?? 0;
-  const ips = t.unique_ips || [];
+  // Backend telemetry is masked: `unique_ips_masked` sample + `unique_ip_count`.
+  const ips = t.unique_ips_masked || t.unique_ips || [];
+  const ipCount = t.unique_ip_count ?? ips.length;
   const factors = (risk && risk.top_contributing_factors) || [];
   const conf = Math.round(Number(attack.confidence ?? 0) * 100);
   const lines = [
@@ -806,11 +808,11 @@ function renderIncidentMarkdown(userId, telemetry, risk, attack, incident) {
     `| Risk Score (0-100) | ${risk.risk_score} (${risk.risk_level}) | ${factors[0] || "n/a"} |`,
     `| Failed vs Successful Logins | ${t.failed_logins} / ${t.successful_logins} | ${
       (t.successful_logins ?? 0) >= 1 && (t.failed_logins ?? 0) >= 10
-        ? "Compromise confirmed"
-        : "Attack in progress"
+        ? "Failed + successful events both present"
+        : "Failures only"
     } |`,
-    `| Unique Source IPs | ${ips.length} — ${ips.join(", ") || "n/a"} | ${
-      t.geo_velocity_violation ? "Impossible travel / multi-ASN" : "Single origin"
+    `| Unique Source IPs | ${ipCount} — ${ips.join(", ") || "n/a"} | ${
+      t.geo_velocity_violation ? "geo_velocity_violation flag set" : "Single origin on record"
     } |`,
     `| Device Changes | ${t.device_changes} | ${
       (t.device_changes ?? 0) > 0 ? "New unrecognised fingerprint" : "Stable"

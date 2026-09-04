@@ -1,0 +1,21 @@
+# Git LFS — large binary ML artifacts (audit finding L-1).
+#
+# The .pkl model files are ~113 MB total (cyberguard_rf_final.pkl 49 MB,
+# network_attack_model.pkl 54 MB) and have been re-committed as plain blobs
+# across several "Update data science models" revisions, bloating every clone.
+#
+# One-time per clone / CI runner:
+#     git lfs install
+#
+# To move the artifacts ALREADY in history from plain blobs into LFS — this
+# REWRITES history, so coordinate with everyone and force-push once:
+#     git lfs migrate import --include="*.pkl,*.joblib" --everything
+#     # then:  git reflog expire --expire=now --all && git gc --prune=now --aggressive
+#
+# New / changed .pkl files are stored in LFS automatically once git-lfs is
+# installed and this file is in place.
+*.pkl     filter=lfs diff=lfs merge=lfs -text
+*.joblib  filter=lfs diff=lfs merge=lfs -text
+
+# Treat model metadata as text so it stays diff-able.
+*.json    text eol=lf

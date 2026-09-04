@@ -1,8 +1,44 @@
+# CyberGuard API — pinned runtime dependencies (M-4).
+# Target runtime: CPython 3.11 or 3.12 (see ../.python-version, ../pyproject.toml).
+#
+# This file is the pin source. After changing any line, regenerate a fully
+# hashed lock in a clean 3.12 venv:
+#     python -m venv .venv && .venv/bin/pip install -r cyberguard_api/requirements.txt
+#     .venv/bin/pip freeze --all > cyberguard_api/requirements.lock
+#
+# CVE / freshness notes:
+#   * pyjwt bumped 2.8.0 -> 2.10.1 (post CVE-2024-53861 issuer-check bypass fix).
+#   * starlette 0.38.6 is what fastapi 0.115.0 resolves; the app serves no
+#     multipart/form endpoints, so CVE-2024-47874 is not reachable. Revisit on
+#     the next fastapi bump.
+
+# --- web framework ---
 fastapi==0.115.0
+starlette==0.38.6
 uvicorn[standard]==0.30.6
+pydantic==2.9.2
+pydantic-settings==2.5.2
+
+# --- gateway / edge (C-3) ---
+slowapi==0.1.9
+
+# --- observability (PP-H4) ---
+prometheus-client==0.21.0
+
+# --- model manifest signature verification (PP-M1, optional-but-pinned) ---
+cryptography==43.0.1
+
+# --- ML stack ---
 scikit-learn==1.6.1
 pandas==2.2.3
 numpy==2.1.2
 joblib==1.4.2
-pydantic==2.9.2
-pydantic-settings==2.5.2
+
+# --- runtime deps ---
+psutil==5.9.8
+httpx==0.27.2
+pyjwt==2.10.1
+redis==5.0.1
+
+# --- MCP stdio server ---
+fastmcp==2.3.4

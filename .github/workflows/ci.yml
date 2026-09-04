@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  schedule:
+    - cron: "0 6 * * *"   # nightly pip-audit for CVE drift
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web_mcp
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true          # pull real .pkl artifacts (A-L5)
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: web_mcp/.python-version
+          cache: pip
+
+      - name: Lint (ruff — config in pyproject.toml, A-M3)
+        run: |
+          python -m pip install --quiet 'ruff==0.6.9'
+          ruff check .
+
+      - name: Resolve the hash-locked requirement set
+        run: |
+          python -m pip install --quiet 'pip-tools==7.4.1'
+          pip-compile --quiet --generate-hashes --allow-unsafe \
+            --output-file requirements.lock cyberguard_api/requirements.txt
+
+      - name: Lockfile is in sync (fails if requirements.txt changed without re-locking)
+        run: |
+          if [ -f requirements.committed.lock ]; then
+            diff -u requirements.committed.lock requirements.lock \
+              || { echo "::error::commit the regenerated requirements.lock"; exit 1; }
+          fi
+
+      - name: Clean install with hash verification
+        run: pip install --no-cache-dir --require-hashes -r requirements.lock
+
+      - name: Model artifact integrity gate
+        run: python -m cyberguard_api.services.model_loader --check
+
+      - name: Fresh-clone import check (C-1)
+        run: PYTHON=python scripts/fresh_clone_check.sh
+
+      - name: Tests
+        run: python -m pytest
+
+      - name: Docker image builds (A-H1)
+        run: docker build -t cyberguard-api:ci .
+
+      - name: Dependency CVE audit
+        run: |
+          python -m pip install --quiet 'pip-audit==2.7.3'
+          pip-audit -r requirements.lock $( [ -f .pip-audit-ignore ] && sed 's/^/--ignore-vuln /' .pip-audit-ignore )

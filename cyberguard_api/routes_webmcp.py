@@ -35,14 +35,25 @@ it never executes remediation.
 
 from __future__ import annotations
 
-import hashlib
+import json
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body, FastAPI, HTTPException, Query
+from typing import Annotated
+
+from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
+
+from cyberguard_api.gateway import get_settings, require_api_key
+from cyberguard_api.observability import sanitized_error
+from cyberguard_api.services import telemetry as _tele
+from cyberguard_api.services.telemetry import MOCK_TELEMETRY
+
+# Bounded free-text: at most 500 chars per recommendation, 1-25 items (PP-M2 / PP-M3).
+RecommendationStr = Annotated[str, StringConstraints(min_length=3, max_length=500)]
 
 __all__ = [
     "router",
@@ -64,73 +75,117 @@ DEFAULT_DEV_ORIGINS = [
     "http://127.0.0.1:5173",
 ]
 
+# Strict, explicit CORS surface (M-8) — no wildcards alongside credentials.
+# `X-Scope-Token` is gone with the decommissioned ?scope=full bypass (M-5).
+ALLOWED_CORS_METHODS = ["GET", "POST", "OPTIONS"]
+ALLOWED_CORS_HEADERS = ["Authorization", "Content-Type", "X-API-Key", "X-Request-ID"]
+
+
+def _parse_cors_origins(raw: str | None) -> list[str]:
+    """Parse CORS_ORIGINS: a JSON array (`["https://a","https://b"]`) or a
+    comma-delimited list (`https://a, https://b`). Returns [] when unset."""
+    if not raw or not raw.strip():
+        return []
+    raw = raw.strip()
+    if raw.startswith("["):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(o).strip() for o in parsed if str(o).strip()]
+        except (ValueError, TypeError):
+            pass
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
 
 def configure_cors(app: FastAPI, extra_origins: list[str] | None = None) -> list[str]:
-    """Attach CORSMiddleware allowing the local dev origins (ports 3000 / 5173)."""
-    origins = list(DEFAULT_DEV_ORIGINS) + list(extra_origins or [])
+    """
+    Attach CORSMiddleware (M-8).
+
+    Origins come from the ``CORS_ORIGINS`` env var (JSON array or comma-delimited).
+    When it is unset we fall back to the local dev origins so a `vite`/`http.server`
+    frontend keeps working, and log that we did. Methods are limited to
+    GET/POST/OPTIONS and headers to an explicit allow-list — never ``"*"`` while
+    ``allow_credentials`` is on.
+    """
+    env_origins = _parse_cors_origins(os.getenv("CORS_ORIGINS"))
+    if env_origins:
+        origins = env_origins + list(extra_origins or [])
+        source = "CORS_ORIGINS env var"
+    elif get_settings().is_production:
+        # L-5: never ship the permissive localhost fallback with credentials.
+        raise RuntimeError(
+            "CORS_ORIGINS must be set to an explicit origin list when "
+            "APP_ENV=production (no wildcard / dev fallback)."
+        )
+    else:
+        origins = list(DEFAULT_DEV_ORIGINS) + list(extra_origins or [])
+        source = "DEFAULT_DEV_ORIGINS fallback — set CORS_ORIGINS for production"
+    if "*" in origins:
+        raise RuntimeError("wildcard CORS origin is not allowed with credentials")
+    print(f"[cors] allow_origins ({source}): {origins}")
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["*"],
+        allow_methods=ALLOWED_CORS_METHODS,
+        allow_headers=ALLOWED_CORS_HEADERS,
+        expose_headers=["X-Request-ID"],
+        max_age=600,
     )
     return origins
 
 
 # ============================================================================
-# Telemetry store
+# Telemetry store + PII projection + scoring
 # ----------------------------------------------------------------------------
-# Mirrors MOCK_TELEMETRY + tool logic in cyberguard_mcp_server.py.
-# Keep the two in sync (or extract to a shared module later).
+# All of this now lives in cyberguard_api.services.telemetry (L-7) and is
+# shared verbatim with agent_controller.py and cyberguard_mcp_server.py, so a
+# record is masked identically on every transport (M-6).
+#
+# `project_user()` is the ONLY user shape allowed in a response and it always
+# masks the username + IPs — there is no unmasked path and the `?scope=full` /
+# X-Scope-Token bypass has been removed (C-5 / M-5).
 # ============================================================================
 
-MOCK_TELEMETRY: dict[str, dict[str, Any]] = {
-    "USR-402": {
-        "user_id": "USR-402",
-        "username": "alex.chen@enterprise.internal",
-        "failed_logins": 47,
-        "successful_logins": 1,
-        "unique_ips": ["198.51.100.23", "203.0.113.88", "192.0.2.14"],
-        "anomaly_score": 0.93,
-        "device_changes": 4,
-        "geo_velocity_violation": True,
-    },
-    "USR-108": {
-        "user_id": "USR-108",
-        "username": "sarah.admin@enterprise.internal",
-        "failed_logins": 12,
-        "successful_logins": 2,
-        "unique_ips": ["198.51.100.12"],
-        "anomaly_score": 0.68,
-        "device_changes": 1,
-        "geo_velocity_violation": False,
-    },
-}
+_generate_incident_report = _tele.generate_incident_report
+
+
+def _project_user(user: dict[str, Any]) -> dict[str, Any]:
+    """Always-masked projection (kept as a local alias for the route bodies)."""
+    return _tele.project_user(user)
+
+
+def _store_call(fn, *args):
+    """
+    Run a telemetry-store read, converting an upstream connection failure / 5xx
+    into a clean sanitised 503 with a correlation id (A-M4). ``HTTPException``
+    (e.g. the 404 for an unknown user) passes straight through.
+    """
+    try:
+        return fn(*args)
+    except HTTPException:
+        raise
+    except Exception as exc:  # httpx errors, JSON decode, backend down, ...
+        raise sanitized_error(
+            "telemetry backend read",
+            exc,
+            status_code=503,
+            client_message="Telemetry backend unavailable",
+        ) from exc
 
 
 def _security_summary() -> dict[str, Any]:
-    return {
-        "monitored_users": 150,
-        "flagged_suspicious_users": 2,
-        "high_severity_alerts": 1,
-        "status": "ELEVATED_RISK",
-    }
+    return _store_call(_tele.security_summary)
 
 
 def _suspicious_users(limit: int = 5) -> list[dict[str, Any]]:
-    ranked = sorted(
-        MOCK_TELEMETRY.values(),
-        key=lambda u: u["anomaly_score"],
-        reverse=True,
-    )
-    return ranked[:limit]
+    return _store_call(_tele.suspicious_users, limit)
 
 
 def _get_user_or_404(user_id: str) -> dict[str, Any]:
-    user = MOCK_TELEMETRY.get(user_id)
-    if not user:
+    user = _store_call(_tele.get_user, user_id)
+    if user is None:
         raise HTTPException(
             status_code=404,
             detail=f"User {user_id} not found in current telemetry log.",
@@ -139,40 +194,8 @@ def _get_user_or_404(user_id: str) -> dict[str, Any]:
 
 
 def _risk_score(user_id: str) -> dict[str, Any]:
-    user = _get_user_or_404(user_id)
-    score = int(user["anomaly_score"] * 100)
-    return {
-        "user_id": user_id,
-        "risk_score": score,
-        "risk_level": (
-            "CRITICAL" if score >= 80 else "HIGH" if score >= 60 else "MEDIUM"
-        ),
-        "top_contributing_factors": [
-            f"{user['failed_logins']} failed authentication attempts within 10 minutes",
-            "Geographical impossible travel detected across 3 ASN networks",
-            "New unrecognized device fingerprint observed",
-        ],
-    }
-
-
-def _incident_id(user_id: str) -> str:
-    # Deterministic (differs from the MCP server's process-salted hash()) so the
-    # REST API returns a stable id for the same user across restarts.
-    digest = int(hashlib.sha256(user_id.encode("utf-8")).hexdigest(), 16)
-    return f"INC-2026-{digest % 10000:04d}"
-
-
-def _generate_incident_report(
-    user_id: str, threat_type: str, severity: str, recommendations: list[str]
-) -> dict[str, Any]:
-    return {
-        "incident_id": _incident_id(user_id),
-        "status": "LOGGED",
-        "target_entity": user_id,
-        "severity": severity,
-        "threat_type": threat_type,
-        "recommended_actions": recommendations,
-    }
+    _get_user_or_404(user_id)  # 404 for an unknown user
+    return _store_call(_tele.risk_score, user_id)
 
 
 # ============================================================================
@@ -224,7 +247,14 @@ LOGIN_RENAME = {
     "login_successful": "Login Successful",
 }
 
-LOGIN_THRESHOLD = 0.55
+# Login-RF operating threshold. Raised from the 0.55 development point to 0.70 to
+# cut false positives (precision was ~0.30 at 0.55). Override with LOGIN_THRESHOLD.
+# `_run_login_rf` always returns the raw probability AND this threshold so a
+# consumer can apply its own alert boundary (M-10).
+try:
+    LOGIN_THRESHOLD = float(os.getenv("LOGIN_THRESHOLD", "0.70"))
+except ValueError:
+    LOGIN_THRESHOLD = 0.70
 
 # Attack label -> MITRE ATT&CK technique id (best-effort mapping).
 NETWORK_MITRE = {
@@ -248,11 +278,11 @@ NETWORK_MITRE = {
 
 @lru_cache(maxsize=1)
 def _login_models():
-    """Lazy-load + cache the login RF and its preprocessor."""
-    import joblib
+    """Lazy-load + cache the login RF and its preprocessor (SHA-256 verified, C-4)."""
+    from cyberguard_api.services.model_loader import load_verified
 
-    rf = joblib.load(MODEL_DIR / "cyberguard_rf_final.pkl")
-    preprocessor = joblib.load(MODEL_DIR / "cyberguard_preprocessor_final.pkl")
+    rf = load_verified("cyberguard_rf_final.pkl")
+    preprocessor = load_verified("cyberguard_preprocessor_final.pkl")
     return rf, preprocessor
 
 
@@ -274,9 +304,11 @@ def _run_login_rf(login_event: dict[str, Any]) -> dict[str, Any]:
     X_processed = preprocessor.transform(X)
     score = float(rf.predict_proba(X_processed)[:, 1][0])
     return {
-        "attack_score": round(score, 4),
+        "attack_score": round(score, 4),      # raw model probability of "attack"
+        "raw_score": score,                    # full-precision, for custom boundaries
         "attack_detected": score >= LOGIN_THRESHOLD,
         "threshold": LOGIN_THRESHOLD,
+        "threshold_source": "LOGIN_THRESHOLD env var (default 0.70)",
         "model": "cyberguard_rf_final.pkl",
     }
 
@@ -290,11 +322,13 @@ def _run_network_rf(network_flow: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:  # missing / malformed features
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    # `attack_type` is already a canonical ASCII label (network_detector.clean_label),
+    # so no mojibake stripping is needed for the MITRE lookup (L-4).
     label = str(res["attack_type"])
-    normalized = label.replace("�", "").replace("Web Attack", "").strip()
+    label_lc = label.lower()
     mitre = None
     for key, technique in NETWORK_MITRE.items():
-        if key.lower() in normalized.lower() or key.lower() in label.lower():
+        if key.lower() in label_lc:
             mitre = technique
             break
 
@@ -338,56 +372,11 @@ def _name_login_pattern(user_id: str, score: float, detected: bool) -> tuple[str
 
 def _heuristic_pattern(user_id: str) -> dict[str, Any]:
     """
-    Grounded fallback when no feature vector is supplied: classify purely from
-    the telemetry store's counters. Every field below is cited in `evidence`.
+    Grounded fallback when no feature vector is supplied: the shared, deterministic
+    classifier over this user's telemetry counters. Every field is cited in
+    ``evidence`` (see cyberguard_api.services.telemetry.classify_pattern).
     """
-    u = _get_user_or_404(user_id)
-    failed = u["failed_logins"]
-    success = u["successful_logins"]
-    ips = len(u["unique_ips"])
-    geo = u["geo_velocity_violation"]
-    dev = u["device_changes"]
-    anom = u["anomaly_score"]
-
-    if success >= 1 and geo and (failed >= 10 or dev >= 3):
-        pattern, mitre, confidence = "Account Takeover (ATO)", "T1078.004", anom
-        signature = (
-            f"{failed} failed then {success} successful auth; impossible travel "
-            f"across {ips} distinct IPs; {dev} device changes."
-        )
-    elif failed >= 20 and success == 0 and ips <= 2:
-        pattern, mitre = "Brute Force", "T1110.001"
-        confidence = min(0.97, 0.50 + failed / 100)
-        signature = f"{failed} consecutive failed auth from {ips} IP(s); no successful login."
-    elif ips >= 3 and failed >= 10:
-        pattern, mitre = "Credential Stuffing", "T1110.004"
-        confidence = min(0.95, 0.40 + ips * 0.10)
-        signature = f"{failed} failed auth spread across {ips} distinct source IPs."
-    elif failed <= 3 and anom < 0.40:
-        pattern, mitre, confidence = "Normal", None, round(1 - anom, 4)
-        signature = f"{failed} failed / {success} successful auth; anomaly score {anom}."
-    else:
-        pattern, mitre, confidence = "Suspicious Authentication Activity", "T1078", anom
-        signature = (
-            f"{failed} failed / {success} successful auth; anomaly score {anom}; "
-            f"{ips} unique IPs; {dev} device changes."
-        )
-
-    return {
-        "classified_pattern": pattern,
-        "confidence": round(float(confidence), 4),
-        "attack_detected": pattern != "Normal",
-        "mitre_technique_id": mitre,
-        "signature_details": signature,
-        "evidence": {
-            "failed_logins": failed,
-            "successful_logins": success,
-            "unique_ip_count": ips,
-            "geo_velocity_violation": geo,
-            "device_changes": dev,
-            "anomaly_score": anom,
-        },
-    }
+    return _tele.classify_pattern(_get_user_or_404(user_id))
 
 
 # ============================================================================
@@ -409,7 +398,8 @@ class IncidentRequest(BaseModel):
     user_id: str = Field(..., min_length=2, max_length=64)
     threat_type: str = Field(..., min_length=2, max_length=120)
     severity: str = Field(..., pattern="^(LOW|MEDIUM|HIGH|CRITICAL)$")
-    recommendations: list[str] = Field(..., min_length=1, max_length=25)
+    # PP-M3: bound BOTH the list length AND each item's length.
+    recommendations: list[RecommendationStr] = Field(..., min_length=1, max_length=25)
 
 
 class AgentInvestigateRequest(BaseModel):
@@ -421,7 +411,11 @@ class AgentInvestigateRequest(BaseModel):
 # Router
 # ============================================================================
 
-router = APIRouter(prefix="/api/v1", tags=["webmcp"])
+# Every /api/v1/* route requires a valid API key / Bearer token (C-3). In dev
+# with API_KEYS unset the dependency is a no-op (logs a warning once).
+router = APIRouter(
+    prefix="/api/v1", tags=["webmcp"], dependencies=[Depends(require_api_key)]
+)
 
 
 @router.get("/security/summary")
@@ -433,12 +427,18 @@ def webmcp_security_summary() -> dict[str, Any]:
 def webmcp_suspicious_users(
     limit: int = Query(default=5, ge=1, le=100),
 ) -> dict[str, Any]:
-    return {"result": _suspicious_users(limit)}
+    # Always masked — no ?scope=full / X-Scope-Token bypass (C-5 / M-5).
+    return {
+        "scope": "masked",
+        "result": [_project_user(u) for u in _suspicious_users(limit)],
+    }
 
 
 @router.get("/users/{user_id}/investigate")
 def webmcp_investigate_user(user_id: str) -> dict[str, Any]:
-    return _get_user_or_404(user_id)
+    projected = _project_user(_get_user_or_404(user_id))
+    projected["scope"] = "masked"
+    return projected
 
 
 @router.get("/users/{user_id}/risk-score")
@@ -454,9 +454,10 @@ def webmcp_analyze_attack_pattern(req: AttackPatternRequest) -> dict[str, Any]:
             result = _run_network_rf(req.network_flow)
         except HTTPException:
             raise
-        except Exception as exc:  # model load / runtime failure
-            raise HTTPException(
-                status_code=503, detail=f"network model inference unavailable: {exc}"
+        except Exception as exc:  # model load / runtime failure (PP-H2: no str(exc))
+            raise sanitized_error(
+                "network model inference", exc,
+                status_code=503, client_message="Network model inference unavailable",
             ) from exc
         return {"user_id": req.user_id, "inference_mode": "network_rf+bot_specialist", **result}
 
@@ -466,9 +467,10 @@ def webmcp_analyze_attack_pattern(req: AttackPatternRequest) -> dict[str, Any]:
             rf_out = _run_login_rf(req.login_event)
         except HTTPException:
             raise
-        except Exception as exc:
-            raise HTTPException(
-                status_code=503, detail=f"login model inference unavailable: {exc}"
+        except Exception as exc:  # PP-H2: no str(exc) in the client body
+            raise sanitized_error(
+                "login model inference", exc,
+                status_code=503, client_message="Login model inference unavailable",
             ) from exc
         pattern, mitre = _name_login_pattern(
             req.user_id, rf_out["attack_score"], rf_out["attack_detected"]

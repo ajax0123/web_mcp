@@ -40,20 +40,25 @@ recommendation.
 
 ## Quick start (2 terminals)
 
-Requires **Python 3.12** (3.14 has no `scikit-learn==1.6.1` wheels).
+Requires **CPython 3.11 or 3.12** (pinned in `.python-version` / `pyproject.toml`;
+3.13+ has no `scikit-learn==1.6.1` wheels). One-shot setup:
+
+```bash
+cd web_mcp
+scripts/bootstrap.sh          # builds a clean .venv, installs pins, verifies import
+```
 
 ```bash
 # -- Terminal 1 -- FastAPI backend on :8000 -----------------------
 cd web_mcp
-python3.12 -m venv .venv            # first run only
 source .venv/bin/activate
-pip install -r cyberguard_api/requirements.txt
-uvicorn cyberguard_api.main:app --host 0.0.0.0 --port 8000 --reload
-#   run from the repo root -- the app is the package `cyberguard_api.main`
+uvicorn cyberguard_api.main:app --host 0.0.0.0 --port 8000 --reload   # dev
+#   production-style:  scripts/run.sh   (workers + --proxy-headers, no --reload)
+#   the app is the package `cyberguard_api.main`; run from the repo root
 
 # -- Terminal 2 -- static frontend on :5173 ----------------------
 cd web_mcp/frontend
-python3 -m http.server 5173
+python3 serve.py 5173          # static server WITH security headers + CSP (PP-M7)
 #   open http://localhost:5173/index.html
 ```
 
@@ -61,11 +66,23 @@ Port **5173** is required — it is in the backend CORS allowlist
 (`DEFAULT_DEV_ORIGINS`, alongside `:3000`). Then click
 **"Auto-Triage & Investigate Worst Offender"**.
 
+The dashboard is zero-CDN: Tailwind is precompiled into `frontend/app.css`, the
+logic is `frontend/app.js`, and the **API target + operator key** come from
+`frontend/config.js` (edit it, or template it from the deploy — no secret is
+baked into `index.html`). When the API runs with `API_KEYS` set, put a
+per-operator key in `config.js` as `apiKey`.
+
+`APP_ENV` defaults to `dev`, where `API_KEYS` may be empty and `/api/v1/*` is
+open (logged warning). Set `APP_ENV=production` and you must also set `API_KEYS`
+and `CORS_ORIGINS` or the process refuses to start. See `.env.example`.
+
 Quick check:
 
 ```bash
-curl -s localhost:8000/health
-curl -s -X POST localhost:8000/api/v1/agent/investigate | python3 -m json.tool
+curl -s localhost:8000/health          # {"status":"ok"} — process liveness only
+curl -s localhost:8000/readyz          # 200 once every ML model is loaded + verified, else 503
+curl -s -X POST localhost:8000/api/v1/agent/investigate | python3 -m json.tool   # dev: no key needed
+# with auth enabled:  curl -H "X-API-Key: $KEY" ...
 ```
 
 ---
@@ -112,10 +129,19 @@ web_mcp/
 
 | Method | Path | Model |
 | :--- | :--- | :--- |
-| GET | `/` , `/health` | service info / `models_loaded` |
-| POST | `/analyze_ip` | `cyberguard_rf_final.pkl` (List[LoginEvent], 32 features) |
-| POST | `/get_user_risk_score` | `isolation_forest_model.pkl` (List[UserBehaviorInput], 13 features) |
-| POST | `/detect_attack_pattern` | `network_attack_model.pkl` + `bot_specialist_model.pkl` (65 features) |
+| GET | `/` | service info |
+| GET | `/health` | process liveness — `{"status":"ok"}` |
+| GET | `/readyz` | readiness — 200 once all ML models load + verify, else 503 |
+| POST | `/analyze_ip` | `cyberguard_rf_final.pkl` (List[LoginEvent], 32 features) — **API key required** |
+| POST | `/get_user_risk_score` | `isolation_forest_model.pkl` (List[UserBehaviorInput], 13 features) — **API key required** |
+| POST | `/detect_attack_pattern` | `network_attack_model.pkl` + `bot_specialist_model.pkl` (65 features) — **API key required** |
+
+All `/api/v1/*` routes and the three ML POST routes require `X-API-Key` /
+`Authorization: Bearer` (bypassed only when `APP_ENV=dev` and `API_KEYS` is
+unset). Every response carries `X-Content-Type-Options`, `X-Frame-Options: DENY`,
+`Referrer-Policy`, a `Content-Security-Policy`, and (in production) HSTS. Bodies
+over `MAX_BODY_BYTES` (default 1 MB) get a `413` at the ASGI edge. Per-client
+rate limiting via `slowapi` (`RATE_LIMIT`, default `60/minute`).
 
 ---
 
@@ -164,12 +190,30 @@ origin (not `file://`).
 ## Verification
 
 ```bash
-curl -s localhost:8000/health | grep -q '"random_forest":true' && echo "models OK"
+# 1. a clean checkout installs + imports with zero errors (C-1)
+scripts/fresh_clone_check.sh
 
+# 2. models loaded + verified (M-9)
+curl -sf localhost:8000/readyz | grep -q '"status": "ready"' && echo "models OK"
+
+# 3. security response headers (H-4)
+curl -sI localhost:8000/health | grep -Ei 'x-frame-options|x-content-type-options|content-security-policy'
+
+# 4. oversized payload is refused at the edge (M-11)
+head -c 2000000 /dev/zero | tr '\0' 'a' \
+  | curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8000/detect_attack_pattern \
+      -H 'content-type: application/json' --data-binary @-      # -> 413
+
+# 5. end-to-end agent run (dev; add -H "X-API-Key: $KEY" once auth is enabled)
 curl -s -X POST localhost:8000/api/v1/agent/investigate \
   | python3 -c 'import sys,json; d=json.load(sys.stdin); \
-    assert d["status"]=="COMPLETE"; print(d["assessment"])'
-# -> Account Takeover (ATO) / CRITICAL / 93%  for USR-402
+    assert d["status"]=="COMPLETE"; print(d["target_user_id"], d["assessment"])'
+# auto-triage picks the worst offender in the 10-user pool:
+# -> USR-205  Brute Force / CRITICAL / 88%  (anomaly 0.96)
+# target USR-402 explicitly ({"user_id":"USR-402"}) for the Account Takeover showcase
+
+# 6. gateway unit tests
+.venv/bin/pytest tests/test_gateway.py
 ```
 
 See **[`DEMO_WALKTHROUGH.md` §8](DEMO_WALKTHROUGH.md)** for the full checklist and

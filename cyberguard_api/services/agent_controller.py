@@ -14,9 +14,11 @@ human in the loop:
     d. REGISTRATION  generate_incident_report(user_id, threat_type, severity, recs)
                      -> consolidated JSON + Markdown report + full audit trace
 
-The six "tools" are the pure helper functions in cyberguard_api.routes_webmcp
-(same logic the REST surface and the MCP server expose). Every call is appended
-to `audit_trace` so the run is fully replayable.
+The six "tools" are the pure helper functions in
+cyberguard_api.services.telemetry (the same functions the REST surface and the
+MCP server expose). Every call is appended to `audit_trace` so the run is fully
+replayable, and every user record is masked via `project_user()` before it is
+recorded or returned (C-5 / M-6).
 
 SAFETY: analytical only. Recommendations are non-destructive and flagged for
 human authorisation; nothing here mutates accounts, sessions, or infrastructure.
@@ -25,12 +27,18 @@ human authorisation; nothing here mutates accounts, sessions, or infrastructure.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from cyberguard_api import routes_webmcp as rw
+# Shared telemetry store + pure helpers (L-7). Same functions the REST surface
+# and the MCP server use, so PII masking + scoring are identical everywhere.
+from cyberguard_api.services import telemetry as tele
+from cyberguard_api.observability import current_request_id, new_correlation_id
 
 __all__ = ["run_autonomous_investigation"]
+
+_LOG = logging.getLogger("cyberguard.agent")
 
 
 # ============================================================================
@@ -38,6 +46,36 @@ __all__ = ["run_autonomous_investigation"]
 # ============================================================================
 
 async def run_autonomous_investigation(target_user_id: str | None = None) -> dict:
+    """
+    Top-level error boundary around the investigation pipeline (PP-M8).
+
+    On any failure this returns a structured ``{"status": "ERROR", ...}`` payload
+    with a ``correlation_id`` (matching the request's ``X-Request-ID``) and the
+    partial ``audit_trace`` — never an unhandled 500.
+    """
+    trace: list[dict[str, Any]] = []
+    try:
+        return await _run_investigation(target_user_id, trace)
+    except Exception as exc:
+        cid = current_request_id()
+        if cid in ("", "-", None):
+            cid = new_correlation_id()
+        _LOG.error(
+            "autonomous investigation failed",
+            exc_info=exc,
+            extra={"request_id": cid, "target_user_id": target_user_id, "steps_done": len(trace)},
+        )
+        return {
+            "status": "ERROR",
+            "message": "Investigation failed before completion.",
+            "correlation_id": cid,
+            "target_user_id": target_user_id,
+            "audit_trace": trace,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+
+async def _run_investigation(target_user_id: str | None, trace: list[dict[str, Any]]) -> dict:
     """
     Run the end-to-end investigation pipeline.
 
@@ -50,7 +88,6 @@ async def run_autonomous_investigation(target_user_id: str | None = None) -> dic
         risk_score, attack_attribution, incident, recommended_actions,
         markdown_report, and the step-by-step audit_trace.
     """
-    trace: list[dict[str, Any]] = []
 
     def record(step: int, tool: str, tool_input: dict[str, Any], output: Any) -> None:
         trace.append(
@@ -71,10 +108,13 @@ async def run_autonomous_investigation(target_user_id: str | None = None) -> dic
         user_id = target_user_id
         selection_reason = "explicit target supplied by caller"
     else:
-        security_summary = rw._security_summary()
+        # A-M4: async store access so a slow external backend never blocks the loop.
+        security_summary = await tele.asecurity_summary()
         record(1, "get_security_summary", {}, security_summary)
 
-        candidates = rw._suspicious_users(limit=3)
+        # Project every triage candidate before it is recorded or returned —
+        # the audit_trace and `triage` block are part of the API response (C-5).
+        candidates = [tele.project_user(u) for u in await tele.asuspicious_users(limit=3)]
         record(2, "get_suspicious_users", {"limit": 3}, candidates)
 
         if not candidates:
@@ -94,7 +134,8 @@ async def run_autonomous_investigation(target_user_id: str | None = None) -> dic
         )
 
     # ---- guard: target must exist in telemetry ---------------------------
-    if user_id not in rw.MOCK_TELEMETRY:
+    user_raw = await tele.aget_user(user_id)
+    if user_raw is None:
         return {
             "status": "TARGET_NOT_FOUND",
             "target_user_id": user_id,
@@ -105,22 +146,39 @@ async def run_autonomous_investigation(target_user_id: str | None = None) -> dic
         }
 
     # ---- b. DEEP-DIVE TELEMETRY -----------------------------------------
-    telemetry = rw._get_user_or_404(user_id)
+    # `telemetry` is the MASKED projection from here on — it is what gets recorded
+    # in the trace and returned to the caller (C-5). Numeric scoring below reads
+    # the projected counts, which are identical to the raw ones.
+    telemetry = tele.project_user(user_raw)
     record(3, "investigate_user", {"user_id": user_id}, telemetry)
 
-    risk = rw._risk_score(user_id)
+    risk = await tele.arisk_score(user_id)
     record(4, "get_user_risk_score", {"user_id": user_id}, risk)
 
-    # ---- c. ML ATTRIBUTION --------------------------------------------
-    attack = rw._heuristic_pattern(user_id)
-    record(5, "detect_attack_pattern", {"user_id": user_id}, attack)
+    # ---- c. ATTACK ATTRIBUTION ---------------------------------------
+    # No feature vector is available at this step (we only have a user id), so the
+    # login Random Forest cannot be run here. Attribution is the shared, grounded
+    # classifier over the telemetry counters. Record the exact function executed
+    # and the inference mode so the trace stays auditable and reproducible (M-13).
+    attack = tele.classify_pattern(user_raw)
+    attack.setdefault("inference_mode", "heuristic")
+    record(
+        5,
+        "detect_attack_pattern",
+        {
+            "user_id": user_id,
+            "executed_function": "cyberguard_api.services.telemetry.classify_pattern",
+            "inference_mode": "heuristic",
+        },
+        attack,
+    )
 
     # ---- d. REPORT REGISTRATION -------------------------------------
     threat_type = attack["classified_pattern"]
     severity = _severity_from(risk, attack)
     recommendations = _recommendations(attack, risk, telemetry)
 
-    incident = rw._generate_incident_report(
+    incident = tele.generate_incident_report(
         user_id, threat_type, severity, recommendations
     )
     record(
@@ -152,6 +210,7 @@ async def run_autonomous_investigation(target_user_id: str | None = None) -> dic
             "confidence_pct": round(float(attack.get("confidence", 0)) * 100),
             "mitre_technique_id": attack.get("mitre_technique_id"),
             "attack_detected": attack.get("attack_detected"),
+            "inference_mode": attack.get("inference_mode"),
             "risk_score": risk.get("risk_score"),
         },
         "triage": {"security_summary": security_summary, "candidates": candidates},
@@ -220,24 +279,36 @@ def _recommendations(
 
 
 def _narrative(telemetry: dict[str, Any], attack: dict[str, Any]) -> str:
-    failed = telemetry.get("failed_logins", 0)
-    success = telemetry.get("successful_logins", 0)
-    ips = telemetry.get("unique_ips", []) or []
+    """
+    Factual, count-based narrative (L-4). No invented timing windows ("in a
+    short window", "during the burst") and no intent claims ("consistent with
+    automated credential guessing", "credentials are compromised") — only what
+    the telemetry record actually carries. IPs are the masked sample (C-5).
+    """
+    failed = int(telemetry.get("failed_logins", 0) or 0)
+    success = int(telemetry.get("successful_logins", 0) or 0)
+    ips_masked = list(telemetry.get("unique_ips_masked", []) or [])
+    n_ips = int(telemetry.get("unique_ip_count", len(ips_masked)))
+    dev = int(telemetry.get("device_changes", 0) or 0)
+    geo = bool(telemetry.get("geo_velocity_violation", False))
+    anom = telemetry.get("anomaly_score")
+
     steps = [
-        f"1. {failed} failed authentication attempts recorded against the account in a short window "
-        f"— consistent with automated credential guessing.",
-        f"2. Attempts originate from {len(ips)} distinct source IP(s): {', '.join(ips) or 'n/a'}"
-        + ("; geo-velocity violation flagged (impossible travel)." if telemetry.get("geo_velocity_violation") else "."),
+        f"1. Telemetry records {failed} failed and {success} successful authentication "
+        f"event(s) for this account. The store carries counts only — no per-event "
+        f"timestamps, so no time window is asserted.",
+        f"2. Distinct source IPs on the record: {n_ips}"
+        + (f" (masked sample: {', '.join(ips_masked)})." if ips_masked else ".")
+        + (" geo_velocity_violation is set on the record." if geo else ""),
     ]
-    if success:
+    if success and failed:
         steps.append(
-            f"3. {success} authentication(s) SUCCEEDED during the burst — credentials are compromised; "
-            f"the resulting session is treated as attacker-controlled."
+            f"3. Both failed ({failed}) and successful ({success}) events are present; "
+            f"the successful session is treated as suspect pending analyst review."
         )
-    if telemetry.get("device_changes"):
+    if dev:
         steps.append(
-            f"4. {telemetry['device_changes']} device change(s) / a new unrecognised fingerprint observed "
-            f"— access is from hardware not previously associated with the user."
+            f"4. device_changes = {dev} on the record (a new or changed device fingerprint)."
         )
     steps.append(
         f"5. Classifier attribution: {attack.get('classified_pattern')} "
@@ -245,6 +316,8 @@ def _narrative(telemetry: dict[str, Any], attack: dict[str, Any]) -> str:
         f"{round(float(attack.get('confidence', 0)) * 100)}% confidence). "
         f"{attack.get('signature_details', '')}"
     )
+    if anom is not None:
+        steps.append(f"6. Anomaly-detector score on the record: {anom}.")
     return "\n".join(steps)
 
 
@@ -256,7 +329,8 @@ def _render_markdown(
     incident: dict[str, Any],
 ) -> str:
     anomaly = telemetry.get("anomaly_score", 0)
-    ips = telemetry.get("unique_ips", []) or []
+    ips_masked = list(telemetry.get("unique_ips_masked", []) or [])
+    n_ips = int(telemetry.get("unique_ip_count", len(ips_masked)))
     factors = risk.get("top_contributing_factors", []) or []
     lines = [
         f"# INCIDENT REPORT: {incident['incident_id']} / {user_id}",
@@ -274,9 +348,9 @@ def _render_markdown(
         f"| Anomaly Score | {anomaly} | {'High' if anomaly >= 0.8 else 'Elevated' if anomaly >= 0.5 else 'Low'} deviation |",
         f"| Risk Score (0-100) | {risk.get('risk_score')} ({risk.get('risk_level')}) | {factors[0] if factors else 'n/a'} |",
         f"| Failed vs Successful Logins | {telemetry.get('failed_logins')} / {telemetry.get('successful_logins')} | "
-        f"{'Compromise confirmed' if telemetry.get('successful_logins', 0) >= 1 and telemetry.get('failed_logins', 0) >= 10 else 'Attack in progress'} |",
-        f"| Unique Source IPs | {len(ips)} — {', '.join(ips) or 'n/a'} | "
-        f"{'Impossible travel / multi-ASN' if telemetry.get('geo_velocity_violation') else 'Single origin'} |",
+        f"{'Failed + successful events both present' if telemetry.get('successful_logins', 0) >= 1 and telemetry.get('failed_logins', 0) >= 10 else 'Failures only'} |",
+        f"| Unique Source IPs | {n_ips} — {', '.join(ips_masked) or 'n/a'} | "
+        f"{'geo_velocity_violation flag set' if telemetry.get('geo_velocity_violation') else 'Single origin on record'} |",
         f"| Device Changes | {telemetry.get('device_changes')} | "
         f"{'New unrecognised fingerprint' if telemetry.get('device_changes', 0) > 0 else 'Stable'} |",
         "",

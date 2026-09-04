@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cyberguard-api"
+version = "1.1.0"
+description = "CyberGuard SOC — ML scoring API, WebMCP REST bridge, and autonomous investigation agent."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+
+# Keep in sync with cyberguard_api/requirements.txt (that file is the pin source).
+dependencies = [
+    "fastapi==0.115.0",
+    "starlette==0.38.6",
+    "uvicorn[standard]==0.30.6",
+    "pydantic==2.9.2",
+    "pydantic-settings==2.5.2",
+    "slowapi==0.1.9",
+    "prometheus-client==0.21.0",
+    "cryptography==43.0.1",
+    "scikit-learn==1.6.1",
+    "pandas==2.2.3",
+    "numpy==2.1.2",
+    "joblib==1.4.2",
+    "psutil==5.9.8",
+    "httpx==0.27.2",
+    "pyjwt==2.10.1",
+    "redis==5.0.1",
+    "fastmcp==2.3.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==8.3.3",
+    "pip-tools==7.4.1",
+    "ruff==0.6.9",
+]
+
+[tool.setuptools.packages.find]
+include = ["cyberguard_api*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+# Vendored / generated / non-Python-lintable trees.
+extend-exclude = [
+    "cyberguard_api/security",   # locked tree, owned by the security track
+    "frontend",
+    "cyberguard_api/models",
+    ".venv",
+]
+
+[tool.ruff.lint]
+# A-M3: a pragmatic, non-blocking baseline — pyflakes (undefined names, unused
+# imports) + a few real bug classes. Style-only rules are intentionally not
+# selected while the codebase's hand-formatting is cleaned up incrementally.
+select = ["F", "E4", "E7", "E9", "B", "UP032", "PIE"]
+ignore = [
+    "E402",   # deliberate late imports (settings-gated module wiring)
+    "E741",   # single-char names in ported numeric code
+    "B008",   # FastAPI Depends(...) in defaults is the framework idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+"cyberguard_api/main.py" = ["E501"]            # sparse hand formatting, cleaned later
+"cyberguard_api/observability.py" = ["F841"]  # slowapi .exempt() is a side effect
+"tests/*" = ["F401", "F811", "E501"]
+"scripts/*" = ["E501"]

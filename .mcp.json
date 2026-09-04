@@ -3,9 +3,12 @@
     "cyberguard": {
       "type": "stdio",
       "command": "python3",
-      "args": [
-        "/Users/aryapatel/arya/Programming/All Hackathons/WebMcp/web_mcp/cyberguard_mcp_server.py"
-      ]
+      "args": ["cyberguard_mcp_server.py"],
+      "cwd": ".",
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONPATH": "."
+      }
     }
   }
 }
