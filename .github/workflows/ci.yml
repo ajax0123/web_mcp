@@ -24,7 +24,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version-file: web_mcp/.python-version
+          python-version-file: .python-version
           cache: pip
 
       - name: Lint (ruff — config in pyproject.toml, A-M3)
