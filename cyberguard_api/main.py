@@ -203,6 +203,22 @@ from cyberguard_api.gateway import (
 
 _settings = get_settings()
 
+# B-1: on Render's 512 MB free tier, unpickling every RandomForest artifact in
+# the lifespan (~hundreds of MB resident) OOM-kills the worker before uvicorn can
+# answer /health, and the platform hangs on a crash-loop. Default posture is now
+# LAZY: models load on the first request that needs them (see _ensure_*_models
+# below), so liveness, /readyz reporting, the telemetry store and the pure-math
+# agent path all stay up. Set CYBERGUARD_EAGER_MODEL_LOAD=1 on an instance with
+# enough RAM (>= ~1 GB) to restore boot-time warmup.
+#
+# Integrity is unaffected: load_verified() still SHA-256-checks each .pkl against
+# the manifest before joblib.load on the lazy path. Only the fail-fast-at-boot
+# behaviour for a tampered artifact is traded for a per-endpoint 503.
+_TRUTHY = {"1", "true", "yes", "on"}
+_EAGER_MODEL_LOAD = os.getenv("CYBERGUARD_EAGER_MODEL_LOAD", "").strip().lower() in _TRUTHY
+_login_models_lock = asyncio.Lock()
+_behaviour_models_lock = asyncio.Lock()
+
 
 # ================================================================
 # APPLICATION
@@ -250,22 +266,32 @@ async def lifespan(app: FastAPI):
     # SHA-256 verified against the manifest before joblib.load runs (C-4). The
     # integrity gate above has already hard-failed on any mismatch in production;
     # here a load error only degrades the affected endpoints to 503.
-    global rf_model, preprocessor, iso_forest, scaler
-    try:
-        rf_model = load_verified("cyberguard_rf_final.pkl")
-        preprocessor = load_verified("cyberguard_preprocessor_final.pkl")
-        iso_forest = load_verified("isolation_forest_model.pkl")
-        scaler = load_verified("feature_scaler.pkl")
-        logger.info("login/behavioural models loaded (integrity verified)")
-    except ModelIntegrityError:
-        logger.error("login/behavioural model integrity failure — endpoints will 503", exc_info=True)
-    except Exception:
-        logger.warning("login/behavioural models unavailable — endpoints will 503", exc_info=True)
+    #
+    # B-1: skipped by default (free-tier OOM). The lazy _ensure_*_models() paths
+    # do the identical verified load on first use. Opt back in with
+    # CYBERGUARD_EAGER_MODEL_LOAD=1 on a box with headroom.
+    if _EAGER_MODEL_LOAD:
+        global rf_model, preprocessor, iso_forest, scaler
+        try:
+            rf_model = load_verified("cyberguard_rf_final.pkl")
+            preprocessor = load_verified("cyberguard_preprocessor_final.pkl")
+            iso_forest = load_verified("isolation_forest_model.pkl")
+            scaler = load_verified("feature_scaler.pkl")
+            logger.info("login/behavioural models loaded (integrity verified)")
+        except ModelIntegrityError:
+            logger.error("login/behavioural model integrity failure — endpoints will 503", exc_info=True)
+        except Exception:
+            logger.warning("login/behavioural models unavailable — endpoints will 503", exc_info=True)
 
-    try:
-        load_network_models()
-    except Exception:
-        logger.warning("network models unavailable — /detect_attack_pattern will 503", exc_info=True)
+        try:
+            load_network_models()
+        except Exception:
+            logger.warning("network models unavailable — /detect_attack_pattern will 503", exc_info=True)
+    else:
+        logger.info(
+            "ML models deferred (lazy load on first inference request) — "
+            "set CYBERGUARD_EAGER_MODEL_LOAD=1 to warm at boot"
+        )
 
     yield
     # Graceful shutdown
@@ -431,8 +457,61 @@ scaler = None
 
 
 # ================================================================
-# LOAD MODELS (loaded in lifespan)
+# LOAD MODELS (lazy — B-1)
 # ================================================================
+# On the free tier the lifespan does NOT unpickle these (see _EAGER_MODEL_LOAD).
+# Each group loads on the first request that needs it, under a lock so concurrent
+# first-callers don't double-load. A failed load leaves the globals None and the
+# endpoint returns the standard 503 via _require_models(). load_verified() keeps
+# the per-artifact SHA-256 manifest check on this path.
+
+
+async def _ensure_login_models() -> None:
+    """Load the login RF + preprocessor on first use (used by /analyze_ip)."""
+    global rf_model, preprocessor
+    if rf_model is not None and preprocessor is not None:
+        return
+    async with _login_models_lock:
+        if rf_model is not None and preprocessor is not None:
+            return
+        loop = asyncio.get_running_loop()
+        try:
+            rf_model, preprocessor = await loop.run_in_executor(
+                None,
+                lambda: (
+                    load_verified("cyberguard_rf_final.pkl"),
+                    load_verified("cyberguard_preprocessor_final.pkl"),
+                ),
+            )
+            logger.info("login models loaded lazily (integrity verified)")
+        except ModelIntegrityError:
+            logger.error("login model integrity failure — /analyze_ip will 503", exc_info=True)
+        except Exception:
+            logger.warning("login models unavailable — /analyze_ip will 503", exc_info=True)
+
+
+async def _ensure_behaviour_models() -> None:
+    """Load the isolation forest + scaler on first use (used by /get_user_risk_score)."""
+    global iso_forest, scaler
+    if iso_forest is not None and scaler is not None:
+        return
+    async with _behaviour_models_lock:
+        if iso_forest is not None and scaler is not None:
+            return
+        loop = asyncio.get_running_loop()
+        try:
+            iso_forest, scaler = await loop.run_in_executor(
+                None,
+                lambda: (
+                    load_verified("isolation_forest_model.pkl"),
+                    load_verified("feature_scaler.pkl"),
+                ),
+            )
+            logger.info("behavioural models loaded lazily (integrity verified)")
+        except ModelIntegrityError:
+            logger.error("behavioural model integrity failure — /get_user_risk_score will 503", exc_info=True)
+        except Exception:
+            logger.warning("behavioural models unavailable — /get_user_risk_score will 503", exc_info=True)
 
 
 # ================================================================
@@ -693,6 +772,7 @@ def _score_login_events(events: List[LoginEvent]) -> List[AttackAnalysisResult]:
 )
 async def analyze_ip(events: List[LoginEvent]):
     _reject_bad_batch(events, "login events")
+    await _ensure_login_models()
     _require_models(rf_model, preprocessor)
     try:
         return await _run_inference(_score_login_events, events)
@@ -738,6 +818,7 @@ def _score_behaviour(users: List[UserBehaviorInput]) -> List[UserBehaviorResult]
 )
 async def get_user_risk_score(users: List[UserBehaviorInput]):
     _reject_bad_batch(users, "users")
+    await _ensure_behaviour_models()
     _require_models(iso_forest, scaler)
     try:
         return await _run_inference(_score_behaviour, users)

@@ -19,6 +19,18 @@ function phaseFor(tool) { return PHASES.find((phase) => PHASE_TOOLS[phase].inclu
 function pretty(value) { return value === undefined || value === null ? "-" : String(value); }
 function redirectToLogin() { window.history.replaceState({}, "", "/"); window.history.pushState({}, "", "/"); window.dispatchEvent(new PopStateEvent("popstate")); }
 function goTo(path) { window.history.pushState({}, "", path); window.dispatchEvent(new PopStateEvent("popstate")); }
+
+// B-2: every raw fetch to the backend gets a hard deadline. A cold-starting or
+// unreachable Render instance otherwise leaves the promise pending forever — the
+// session check in <App> then never settles and the UI is stuck on
+// "CHECKING SESSION...". On timeout the AbortController fires and fetch rejects
+// with an AbortError, which each caller's existing catch already handles.
+// `bridge.client.*` calls have their own 15s timeout in webmcp_bridge.js.
+function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: ac.signal }).finally(() => clearTimeout(timer));
+}
 function inlineMarkdown(text) {
   return String(text).split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean).map((part, index) => {
     if (part.startsWith("**")) return <strong key={index}>{part.slice(2, -2)}</strong>;
@@ -85,7 +97,7 @@ function AdminLogin({ onAuthenticated, demoLogin }) {
   async function submit(event) {
     event.preventDefault(); if (!username.trim() || !password) { setError("Enter your administrator credentials."); return; }
     setLoading(true); setError("");
-    try { const response = await fetch(`${API_BASE}/api/auth/login`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: username.trim(), password }) }); if (!response.ok) { setError(response.status === 401 ? "Invalid administrator credentials." : response.status === 503 ? "Administrator access is not configured on the server." : "Authentication service unavailable."); return; } window.history.pushState({}, "", "/dashboard"); onAuthenticated(); }
+    try { const response = await fetchWithTimeout(`${API_BASE}/api/auth/login`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: username.trim(), password }) }, 8000); if (!response.ok) { setError(response.status === 401 ? "Invalid administrator credentials." : response.status === 503 ? "Administrator access is not configured on the server." : "Authentication service unavailable."); return; } window.history.pushState({}, "", "/dashboard"); onAuthenticated(); }
     catch { setError("Unable to reach the authentication service."); } finally { setLoading(false); }
   }
   return <main className="auth-page"><section className="login-card"><button className="back-link" onClick={() => goTo("/")}>← BACK TO CYBERGUARD</button><a className="brand login-brand" href="/" aria-label="CyberGuard home"><span className="brand-mark">C</span><span>CYBERGUARD</span><small>SECURITY INTELLIGENCE</small></a><div className="eyebrow">RESTRICTED OPERATOR ACCESS</div><h1>Admin Login</h1><p>Sign in to access the CyberGuard security investigation console.</p>{demoLogin && <div className="demo-notice" role="note">DEMO MODE · credentials prefilled (admin / demo1234) — just click LOGIN</div>}<form onSubmit={submit} noValidate><label htmlFor="login-username">USERNAME OR EMAIL</label><input id="login-username" value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="username" /><label htmlFor="login-password">PASSWORD</label><input id="login-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" />{error && <div className="login-error" role="alert">{error}</div>}<button className="primary-action login-action" type="submit" disabled={loading}>{loading ? "AUTHENTICATING..." : "LOGIN TO CYBERGUARD  →"}</button></form><span className="login-footnote">SESSION PROTECTED · HTTP-ONLY COOKIE</span></section></main>;
@@ -110,11 +122,13 @@ function Dashboard({ onLogout, onSessionExpired }) {
   const [securityCenter, setSecurityCenter] = useState({ summary: {}, events: [], incidents: [] }); const [selectedIncident, setSelectedIncident] = useState(null); const [securityBusy, setSecurityBusy] = useState(false);
   const native = bridge.mode === "webmcp";
   async function loadData() { try { const [nextSummary, nextUsers] = await Promise.all([bridge.client.getSecuritySummary(), bridge.client.getSuspiciousUsers(5)]); setSummary(nextSummary || {}); setUsers(nextUsers || []); } catch (error) { if (error.status === 401) { redirectToLogin(); onSessionExpired(); return; } setBanner(`Security data unavailable at ${API_BASE}: ${error.message}`); } }
-  async function loadSecurityCenter() { try { const [centerSummary, events, incidents] = await Promise.all([fetch(`${API_BASE}/admin/security/summary`, { credentials: "include" }).then((response) => response.json()), fetch(`${API_BASE}/admin/security/events`, { credentials: "include" }).then((response) => response.json()), fetch(`${API_BASE}/admin/incidents`, { credentials: "include" }).then((response) => response.json())]); setSecurityCenter({ summary: centerSummary || {}, events: events.events || [], incidents: incidents.incidents || [] }); } catch (error) { if (error.status === 401) onSessionExpired(); } }
+  // 4s deadline — shorter than the 5s poll interval below so a hung backend
+  // aborts each request instead of stacking pending fetches every tick (B-2).
+  async function loadSecurityCenter() { try { const [centerSummary, events, incidents] = await Promise.all([fetchWithTimeout(`${API_BASE}/admin/security/summary`, { credentials: "include" }, 4000).then((response) => response.json()), fetchWithTimeout(`${API_BASE}/admin/security/events`, { credentials: "include" }, 4000).then((response) => response.json()), fetchWithTimeout(`${API_BASE}/admin/incidents`, { credentials: "include" }, 4000).then((response) => response.json())]); setSecurityCenter({ summary: centerSummary || {}, events: events.events || [], incidents: incidents.incidents || [] }); } catch (error) { if (error.status === 401) onSessionExpired(); } }
   useEffect(() => { loadData(); }, []);
   useEffect(() => { loadSecurityCenter(); const interval = window.setInterval(loadSecurityCenter, 5000); return () => window.clearInterval(interval); }, []);
-  async function simulateSuspiciousLogin() { setSecurityBusy(true); try { await fetch(`${API_BASE}/auth/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: "USR-1042", ip_address: "203.0.113.7", country: "India", device_type: "Desktop", login_successful: true, failed_logins: 47, successful_logins: 1, unique_ips: ["203.0.113.7", "198.51.100.8"], anomaly_score: 0.93, device_changed: true, location_changed: true, login_hour: 2 }) }); await loadSecurityCenter(); setToast("High-risk demo login detected"); } finally { setSecurityBusy(false); } }
-  async function denySelectedIncident() { if (!selectedIncident) return; setSecurityBusy(true); try { const response = await fetch(`${API_BASE}/admin/access-control/deny?user_id=${encodeURIComponent(selectedIncident.user_id)}`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: selectedIncident.attack_type }) }); if (!response.ok) throw new Error("Containment action was not authorized"); await loadSecurityCenter(); setSelectedIncident(null); setToast("Demo containment recorded"); } catch (error) { setBanner(error.message); } finally { setSecurityBusy(false); } }
+  async function simulateSuspiciousLogin() { setSecurityBusy(true); try { await fetchWithTimeout(`${API_BASE}/auth/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user_id: "USR-1042", ip_address: "203.0.113.7", country: "India", device_type: "Desktop", login_successful: true, failed_logins: 47, successful_logins: 1, unique_ips: ["203.0.113.7", "198.51.100.8"], anomaly_score: 0.93, device_changed: true, location_changed: true, login_hour: 2 }) }, 8000); await loadSecurityCenter(); setToast("High-risk demo login detected"); } catch (error) { setBanner(`Demo login could not be submitted: ${error.message}`); } finally { setSecurityBusy(false); } }
+  async function denySelectedIncident() { if (!selectedIncident) return; setSecurityBusy(true); try { const response = await fetchWithTimeout(`${API_BASE}/admin/access-control/deny?user_id=${encodeURIComponent(selectedIncident.user_id)}`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: selectedIncident.attack_type }) }, 8000); if (!response.ok) throw new Error("Containment action was not authorized"); await loadSecurityCenter(); setSelectedIncident(null); setToast("Demo containment recorded"); } catch (error) { setBanner(error.message); } finally { setSecurityBusy(false); } }
   async function investigate(userId = null) { if (running) return; setRunning(true); setBanner(""); setResult(null); try { const next = await bridge.runInvestigation(userId || null); if (next.status && next.status !== "COMPLETE") setBanner(`${next.status}: ${next.message || "Investigation did not complete."}`); else setResult(next); } catch (error) { if (error.status === 401) { redirectToLogin(); onSessionExpired(); return; } setBanner(`Investigation failed: ${error.message}`); } finally { setRunning(false); } }
   function downloadReport() {
     if (!result?.markdown_report) return;
@@ -155,8 +169,31 @@ function App() {
   const [authenticated, setAuthenticated] = useState(null);
   const [demoLogin, setDemoLogin] = useState(false);
   const [path, setPath] = useState(window.location.pathname);
-  useEffect(() => { const onPopState = () => setPath(window.location.pathname); window.addEventListener("popstate", onPopState); fetch(`${API_BASE}/api/auth/me`, { credentials: "include" }).then((response) => response.ok ? response.json() : { authenticated: false }).then((data) => { const isAuthenticated = Boolean(data.authenticated); setDemoLogin(Boolean(data.demo_login)); if (isAuthenticated && path !== "/dashboard") { window.history.replaceState({}, "", "/dashboard"); setPath("/dashboard"); } if (!isAuthenticated && path === "/dashboard") { window.history.replaceState({}, "", "/"); setPath("/"); } setAuthenticated(isAuthenticated); }).catch(() => { if (path === "/dashboard") { window.history.replaceState({}, "", "/"); setPath("/"); } setAuthenticated(false); }); return () => window.removeEventListener("popstate", onPopState); }, []);
-  function logout() { fetch(`${API_BASE}/api/auth/logout`, { method: "POST", credentials: "include" }).finally(() => { redirectToLogin(); setAuthenticated(false); }); }
+  useEffect(() => {
+    const onPopState = () => setPath(window.location.pathname);
+    window.addEventListener("popstate", onPopState);
+    let cancelled = false;
+    // 8s deadline: a cold-starting / unreachable backend must not pin the app on
+    // "CHECKING SESSION..." — on timeout we fall through to the public view (B-2).
+    fetchWithTimeout(`${API_BASE}/api/auth/me`, { credentials: "include" }, 8000)
+      .then((response) => (response.ok ? response.json() : { authenticated: false }))
+      .then((data) => {
+        if (cancelled) return;
+        const isAuthenticated = Boolean(data.authenticated);
+        setDemoLogin(Boolean(data.demo_login));
+        if (isAuthenticated && path !== "/dashboard") { window.history.replaceState({}, "", "/dashboard"); setPath("/dashboard"); }
+        if (!isAuthenticated && path === "/dashboard") { window.history.replaceState({}, "", "/"); setPath("/"); }
+        setAuthenticated(isAuthenticated);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // Network timeout or backend drop — gracefully unblock to public/login.
+        if (path === "/dashboard") { window.history.replaceState({}, "", "/"); setPath("/"); }
+        setAuthenticated(false);
+      });
+    return () => { cancelled = true; window.removeEventListener("popstate", onPopState); };
+  }, []);
+  function logout() { fetchWithTimeout(`${API_BASE}/api/auth/logout`, { method: "POST", credentials: "include" }, 8000).catch(() => {}).finally(() => { redirectToLogin(); setAuthenticated(false); }); }
   if (authenticated === null) return <main className="auth-loading">CHECKING SESSION...</main>;
   if (!authenticated && path === "/login") return <AdminLogin demoLogin={demoLogin} onAuthenticated={() => { setAuthenticated(true); setPath("/dashboard"); }} />;
   if (!authenticated) return <Landing />;

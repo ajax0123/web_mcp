@@ -5,11 +5,16 @@
 # repo. Render reads .python-version too; PYTHON_VERSION below pins the patch.
 #
 # NOTE (free plan, 512 MB): cyberguard_rf_final.pkl (~51 MB) + network_attack_model.pkl
-# (~56 MB) unpickle into a few hundred MB of RandomForest. If the instance OOMs on
-# boot, either move to a paid plan or run with the ML routes degraded — the WebMCP
-# agent demo path (/api/v1/agent/investigate) is pure telemetry math and needs no
-# .pkl, so it stays up even when /readyz is 503. healthCheckPath is /health
-# (liveness) so a slow model load does not get the instance killed.
+# (~56 MB) unpickle into a few hundred MB of RandomForest. B-1 fix: models now load
+# LAZILY on the first request that needs them (not in the lifespan), so the worker
+# boots, binds $PORT and answers /health well under the 512 MB ceiling. ML routes
+# still 503 (or OOM the instance) if actually exercised on free — the WebMCP agent
+# demo path (/api/v1/agent/investigate) is pure telemetry math and needs no .pkl,
+# so it stays up. healthCheckPath is /health (liveness), never /readyz.
+#
+# If deploying via the Render "Docker" dashboard flow instead of this Blueprint,
+# set the same env vars in the service's Environment tab — dashboard vars override
+# the Dockerfile ENV (which still ships CYBERGUARD_VERIFY_MODELS_ON_IMPORT=1).
 
 services:
   - type: web
@@ -34,11 +39,25 @@ services:
         value: mock
       - key: LOG_LEVEL
         value: INFO
-      # Comma-separated browser origins allowed to call /api/v1/* — set this to the
-      # deployed frontend URL(s), e.g. https://cyberguard-frontend.vercel.app
-      # Leave unset only for a backend-only (curl / MCP) demo.
+      # B-1: keep model loading lazy (default). Only set to 1 on a >= ~1 GB plan.
+      - key: CYBERGUARD_EAGER_MODEL_LOAD
+        value: "0"
+      # B-1: no import-time / boot-time manifest hashing pass (still verified
+      # per-artifact on the lazy load). Overrides the Dockerfile ENV default of 1.
+      - key: CYBERGUARD_VERIFY_MODELS_ON_IMPORT
+        value: "0"
+      # Single worker process — no per-worker RAM duplication of the models.
+      - key: WEB_CONCURRENCY
+        value: "1"
+      # Behind Render's single managed ingress: trust its X-Forwarded-* headers.
+      - key: FORWARDED_ALLOW_IPS
+        value: "*"
+      # M-1: comma-separated browser origins allowed to call /api/v1/* — MUST be the
+      # exact deployed frontend origin(s). Vercel auto-suffixes the project name,
+      # so the live URL is https://cyberguard-frontend-iota.vercel.app (not the
+      # bare cyberguard-frontend.vercel.app). Add production / custom domains too.
       - key: CORS_ORIGINS
-        sync: false
+        value: https://cyberguard-frontend-iota.vercel.app
       # Optional: per-operator API keys. Unset in staging => /api/v1 is open (logged warning).
       - key: API_KEYS
         sync: false
