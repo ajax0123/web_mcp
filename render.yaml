@@ -1,0 +1,49 @@
+# render.yaml — CyberGuard API on Render (https://render.com/docs/blueprint-spec)
+#
+# The git repository root IS the project root, so every path here is
+# repo-root-relative (no `web_mcp/` prefix). Deploy: New > Blueprint > pick this
+# repo. Render reads .python-version too; PYTHON_VERSION below pins the patch.
+#
+# NOTE (free plan, 512 MB): cyberguard_rf_final.pkl (~51 MB) + network_attack_model.pkl
+# (~56 MB) unpickle into a few hundred MB of RandomForest. If the instance OOMs on
+# boot, either move to a paid plan or run with the ML routes degraded — the WebMCP
+# agent demo path (/api/v1/agent/investigate) is pure telemetry math and needs no
+# .pkl, so it stays up even when /readyz is 503. healthCheckPath is /health
+# (liveness) so a slow model load does not get the instance killed.
+
+services:
+  - type: web
+    name: cyberguard-api
+    runtime: python
+    plan: free
+    region: oregon
+    branch: main
+    buildCommand: pip install -r cyberguard_api/requirements.txt
+    startCommand: >-
+      uvicorn cyberguard_api.main:app
+      --host 0.0.0.0 --port $PORT
+      --proxy-headers --forwarded-allow-ips "*"
+      --no-access-log --no-server-header
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.2"
+      - key: APP_ENV
+        value: staging          # not "production" -> no fail-closed on keys/CORS; demo admin login stays on
+      - key: TELEMETRY_BACKEND
+        value: mock
+      - key: LOG_LEVEL
+        value: INFO
+      # Comma-separated browser origins allowed to call /api/v1/* — set this to the
+      # deployed frontend URL(s), e.g. https://cyberguard-frontend.vercel.app
+      # Leave unset only for a backend-only (curl / MCP) demo.
+      - key: CORS_ORIGINS
+        sync: false
+      # Optional: per-operator API keys. Unset in staging => /api/v1 is open (logged warning).
+      - key: API_KEYS
+        sync: false
+      # Optional: real admin console login (PBKDF2). Unset => built-in demo login admin/demo1234.
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: ADMIN_PASSWORD_HASH
+        sync: false

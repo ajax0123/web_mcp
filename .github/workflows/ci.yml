@@ -14,18 +14,24 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web_mcp
+    # The git repository root IS the project root: this file is at
+    # .github/workflows/ci.yml, with cyberguard_api/, frontend/, Dockerfile,
+    # pyproject.toml as siblings. There is NO `web_mcp/` sub-directory in the
+    # checkout, so there is no `working-directory` override and no
+    # `web_mcp/`-prefixed paths (that mismatch is what broke setup-python:
+    # "The specified python version file at: web_mcp/.python-version doesn't exist").
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          lfs: true          # pull real .pkl artifacts (A-L5)
+          lfs: true          # harmless when the .pkl blobs are plain; needed after an lfs migrate
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          python-version-file: web_mcp/.python-version
-          cache: pip
+          python-version: "3.12"      # keep in sync with .python-version / pyproject.toml (>=3.11,<3.13)
+          cache: "pip"
+          cache-dependency-path: "**/requirements*.txt"
 
       - name: Lint (ruff — config in pyproject.toml, A-M3)
         run: |
@@ -34,7 +40,10 @@ jobs:
 
       - name: Resolve the hash-locked requirement set
         run: |
-          python -m pip install --quiet 'pip-tools==7.4.1'
+          # pip-tools 7.4.1 uses pip internals removed in pip >= 25.1
+          # (PackageFinder.allow_all_prereleases / stdlib_pkgs), so pin pip below
+          # that line before invoking pip-compile.
+          python -m pip install --quiet 'pip<25.1' 'pip-tools==7.4.1'
           pip-compile --quiet --generate-hashes --allow-unsafe \
             --output-file requirements.lock cyberguard_api/requirements.txt
 

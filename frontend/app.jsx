@@ -3,7 +3,15 @@ import { createRoot } from "react-dom/client";
 import { initWebMCP } from "./webmcp_bridge.js";
 
 const CFG = window.CYBERGUARD_CONFIG || {};
-const API_BASE = (CFG.apiBase || "http://localhost:8000").replace(/\/+$/, "");
+// config.js normally sets CFG.apiBase. This fallback only fires if config.js
+// failed to load: localhost -> local API; anything else -> injected override or
+// same-origin (so a single-host deploy still works).
+const _host = (typeof window !== "undefined" && window.location.hostname) || "";
+const _isLocal = _host === "localhost" || _host === "127.0.0.1" || _host === "0.0.0.0" || _host === "";
+const _fallbackApiBase = _isLocal
+  ? "http://localhost:8000"
+  : (window.__CYBERGUARD_API_URL__ || window.location.origin);
+const API_BASE = (CFG.apiBase || _fallbackApiBase).replace(/\/+$/, "");
 const bridge = initWebMCP(API_BASE, { credentials: "include", headers: CFG.apiKey ? { "X-API-Key": String(CFG.apiKey) } : {} });
 const PHASES = ["DISCOVER", "INSPECT", "CORRELATE", "ATTRIBUTE", "REPORT"];
 const PHASE_TOOLS = { DISCOVER: ["get_security_summary", "get_suspicious_users"], INSPECT: ["investigate_user"], CORRELATE: ["get_user_risk_score"], ATTRIBUTE: ["detect_attack_pattern"], REPORT: ["generate_incident_report"] };

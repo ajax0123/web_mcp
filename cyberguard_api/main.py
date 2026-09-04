@@ -796,3 +796,28 @@ def risk_bucket(
         return "medium"
 
     return "low"
+
+
+# ================================================================
+# CONTAINER / PaaS ENTRYPOINT
+# ================================================================
+# Preferred invocation stays `uvicorn cyberguard_api.main:app` (Dockerfile CMD,
+# scripts/run.sh, render.yaml, Procfile). This block only adds a fallback so
+# `python -m cyberguard_api.main` also works, binding 0.0.0.0 and reading the
+# platform-assigned $PORT (Render / Railway / Heroku) with an 8000 default.
+
+def _run() -> None:
+    import uvicorn
+
+    uvicorn.run(
+        "cyberguard_api.main:app",
+        host=os.getenv("HOST", "0.0.0.0"),
+        port=int(os.getenv("PORT", "8000")),
+        proxy_headers=True,
+        forwarded_allow_ips=os.getenv("FORWARDED_ALLOW_IPS", "*"),
+        access_log=False,
+    )
+
+
+if __name__ == "__main__":
+    _run()
