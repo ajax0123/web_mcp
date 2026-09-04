@@ -5,16 +5,15 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <!--
   PP-M7: no runtime Tailwind compiler, no external CDN, no 'unsafe-eval'.
-  Styles are precompiled and self-hosted (./app.css). This <meta> CSP is a
-  defence-in-depth backstop; the AUTHORITATIVE CSP is the HTTP response header
-  set by the serving layer:
-    - dev   : frontend/serve.py  (CYBERGUARD_CONNECT_SRC env var)
-    - Vercel : frontend/vercel.json `headers` (pin connect-src to your API origin)
-  `connect-src` here allows localhost + any https host so the same static bundle
-  works whether the API is on localhost:8000, Render, Railway, etc.; the serving
-  layer's header narrows it to the one real origin.
+  Styles are precompiled and self-hosted (./app.css).
+
+  F-3: the CSP is set ONLY by the serving layer's HTTP response header — there is
+  no <meta> CSP here. A stale <meta> (with http://localhost:8000 + `https:`) would
+  loosen `connect-src` via the meta/header intersection and mask a misconfigured
+  header. Serving layers:
+    - dev    : frontend/serve.py       (CYBERGUARD_CONNECT_SRC env var)
+    - Vercel : frontend/vercel.json    `headers` -> connect-src pinned to the one API origin
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' http://localhost:8000 https:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'" />
 <title>CyberGuard — Security Intelligence</title>
 <!--
   Phase 4 — Interactive Investigation Dashboard.

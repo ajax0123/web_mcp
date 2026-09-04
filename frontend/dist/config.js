@@ -19,9 +19,14 @@
   // Precedence: explicit override  ->  localhost in dev  ->  deployed API default.
   // Change the production URL to your Render/Railway host, or inject
   // window.__CYBERGUARD_API_URL__ before this script.
+  //
+  // NOTE: this literal MUST match the vercel.json CSP `connect-src` host and the
+  // live Render service URL. Render appends a random suffix (…-bw5v) that changes
+  // if the service is recreated — repoint both places together, or move to a
+  // stable custom domain.
   var API_BASE =
     (typeof window !== "undefined" && window.__CYBERGUARD_API_URL__) ||
-    (isLocal ? "http://localhost:8000" : "https://cyberguard-api.onrender.com");
+    (isLocal ? "http://localhost:8000" : "https://cyberguard-backend-bw5v.onrender.com");
 
   window.CYBERGUARD_CONFIG = {
     // Base URL of the CyberGuard API. Must also be allowed by the page CSP `connect-src`.
