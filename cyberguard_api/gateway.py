@@ -26,6 +26,11 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+import base64
+import hashlib
+import hmac
+import secrets
+import time
 from functools import lru_cache
 from typing import Iterable
 
@@ -101,6 +106,10 @@ class Settings(BaseSettings):
     # Expose interactive docs only when true (default: off in production).
     enable_docs: bool = True
 
+    admin_username: str = ""
+    admin_password_hash: str = ""
+    auth_session_ttl_seconds: int = 1800
+
     if _HAVE_SETTINGS:
         model_config = SettingsConfigDict(
             env_file=".env", env_file_encoding="utf-8", extra="ignore"
@@ -157,6 +166,47 @@ def get_settings() -> Settings:
 # ============================================================================
 
 _AUTH_BYPASS_WARNED = False
+_AUTH_SESSIONS: dict[str, float] = {}
+
+
+def _verify_password(password: str, encoded_hash: str) -> bool:
+    """Verify PBKDF2-SHA256 hashes encoded as pbkdf2_sha256$iterations$salt$hash."""
+    try:
+        algorithm, iterations, salt, expected = encoded_hash.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        derived = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), int(iterations))
+        return hmac.compare_digest(base64.urlsafe_b64encode(derived).decode().rstrip("="), expected)
+    except (ValueError, TypeError):
+        return False
+
+
+def authenticate_admin(username: str, password: str) -> str | None:
+    settings = get_settings()
+    if not settings.admin_username or not settings.admin_password_hash:
+        return None
+    if not hmac.compare_digest(username, settings.admin_username) or not _verify_password(password, settings.admin_password_hash):
+        return None
+    session_id = secrets.token_urlsafe(32)
+    _AUTH_SESSIONS[session_id] = time.time() + max(60, settings.auth_session_ttl_seconds)
+    return session_id
+
+
+def valid_session(session_id: str | None) -> bool:
+    if not session_id:
+        return False
+    expires_at = _AUTH_SESSIONS.get(session_id)
+    if expires_at is None:
+        return False
+    if expires_at <= time.time():
+        _AUTH_SESSIONS.pop(session_id, None)
+        return False
+    return True
+
+
+def revoke_session(session_id: str | None) -> None:
+    if session_id:
+        _AUTH_SESSIONS.pop(session_id, None)
 
 
 def _extract_key(request: Request) -> str | None:
@@ -198,6 +248,8 @@ async def require_api_key(request: Request) -> None:
 
     import secrets
 
+    if valid_session(request.cookies.get("cyberguard_session")):
+        return
     provided = _extract_key(request)
     if not provided or not any(secrets.compare_digest(provided, k) for k in keys):
         raise HTTPException(

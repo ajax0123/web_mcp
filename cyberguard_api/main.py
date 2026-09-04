@@ -44,8 +44,8 @@ Run (from the repo root, web_mcp/):
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from fastapi import Depends, FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from pydantic import BaseModel, Field
 from typing import List
 
 import logging
@@ -199,6 +199,9 @@ from cyberguard_api.gateway import (
     install_middleware,
     rate_limit_exempt,
     require_api_key,
+    authenticate_admin,
+    revoke_session,
+    valid_session,
 )
 
 _settings = get_settings()
@@ -277,6 +280,37 @@ app = FastAPI(
     docs_url=_settings.docs_url,
     redoc_url=_settings.redoc_url,
 )
+
+
+class AdminLoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=128)
+    password: str = Field(..., min_length=1, max_length=256)
+
+
+@app.post("/api/auth/login")
+async def admin_login(payload: AdminLoginRequest, response: Response) -> dict[str, str]:
+    if not _settings.admin_username or not _settings.admin_password_hash:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Administrator authentication is not configured.")
+    session_id = authenticate_admin(payload.username, payload.password)
+    if not session_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid administrator credentials.")
+    response.set_cookie(
+        "cyberguard_session", session_id, httponly=True, secure=_settings.is_production,
+        samesite="lax", max_age=max(60, _settings.auth_session_ttl_seconds), path="/",
+    )
+    return {"status": "authenticated"}
+
+
+@app.get("/api/auth/me")
+async def admin_session(request: Request) -> dict[str, bool]:
+    return {"authenticated": valid_session(request.cookies.get("cyberguard_session"))}
+
+
+@app.post("/api/auth/logout")
+async def admin_logout(request: Request, response: Response) -> dict[str, str]:
+    revoke_session(request.cookies.get("cyberguard_session"))
+    response.delete_cookie("cyberguard_session", path="/")
+    return {"status": "logged_out"}
 
 # Rate limiter must exist before route definitions use `rate_limit_exempt` (C-3).
 create_limiter(app, _settings)

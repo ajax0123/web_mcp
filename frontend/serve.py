@@ -46,6 +46,11 @@ SECURITY_HEADERS = {
 
 
 class Handler(SimpleHTTPRequestHandler):
+    def do_GET(self) -> None:
+        if self.path.split("?", 1)[0] in {"/", "/dashboard"}:
+            self.path = "/index.html"
+        super().do_GET()
+
     def end_headers(self) -> None:  # noqa: D401
         for k, v in SECURITY_HEADERS.items():
             self.send_header(k, v)

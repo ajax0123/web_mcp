@@ -1,6 +1,6 @@
 /* config.js — runtime configuration for the CyberGuard dashboard (PP-H3).
  *
- * This file is loaded before app.js and is the ONLY place the API target and
+ * This file is loaded before app.jsx and is the ONLY place the API target and
  * the operator credential live. It is intended to be:
  *   - edited per environment, or
  *   - overwritten by the deploy (envsubst / a ConfigMap / an entrypoint script).

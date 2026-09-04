@@ -9,11 +9,11 @@
   defence-in-depth backstop; the authoritative CSP is the HTTP response header
   set by the serving layer (frontend/serve.py in dev, nginx/CDN in prod), which
   can also send HSTS / X-Frame-Options / etc.
-  `connect-src` is widened at runtime by app.js to whatever CYBERGUARD_CONFIG.apiBase
+  `connect-src` is widened at runtime by app.jsx to whatever CYBERGUARD_CONFIG.apiBase
   resolves to — keep it in sync when you deploy the API elsewhere.
 -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' http://localhost:8000; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'" />
-<title>CyberGuard SOC — Investigation Dashboard</title>
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' http://localhost:8000; base-uri 'none'; form-action 'none'; object-src 'none'" />
+<title>CyberGuard — Security Intelligence</title>
 <!--
   Phase 4 — Interactive Investigation Dashboard. Imports ./webmcp_bridge.js (ES module).
 
@@ -28,133 +28,8 @@
 <link rel="stylesheet" href="./app.css" />
 <script src="./config.js"></script>
 </head>
-<body class="app bg-slate-950 text-slate-200 min-h-screen font-sans antialiased">
-
-  <!-- ================= HEADER ================= -->
-  <header class="border-b border-slate-800 bg-slate-900/60 backdrop-blur sticky top-0 z-20">
-    <div class="max-w-[1500px] mx-auto px-5 py-3 flex flex-wrap items-center gap-x-4 gap-y-2">
-      <div class="flex items-center gap-2">
-        <span class="text-cyan-400 text-xl">🛡️</span>
-        <span class="font-bold tracking-tight text-slate-100">CyberGuard SOC</span>
-        <span class="text-xs text-slate-500">Tier-2 Autonomous Investigation</span>
-      </div>
-
-      <div id="modePill"
-        class="ml-1 flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold bg-slate-700 text-slate-200">
-        <span id="modeDot" class="w-2 h-2 rounded-full bg-slate-400"></span>
-        <span id="modeText">detecting…</span>
-      </div>
-
-      <div class="flex items-center gap-2 ml-auto text-xs">
-        <div class="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700">
-          <span class="text-slate-500 uppercase tracking-wide">Monitored</span>
-          <span id="mMonitored" class="ml-2 font-bold text-slate-100">—</span>
-        </div>
-        <div class="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700">
-          <span class="text-slate-500 uppercase tracking-wide">Flagged</span>
-          <span id="mFlagged" class="ml-2 font-bold text-amber-400">—</span>
-        </div>
-        <div class="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-700">
-          <span class="text-slate-500 uppercase tracking-wide">Status</span>
-          <span id="mStatus" class="ml-2 font-bold text-slate-100">—</span>
-        </div>
-      </div>
-    </div>
-  </header>
-
-  <div id="banner" class="hidden max-w-[1500px] mx-auto px-5 pt-3">
-    <div class="rounded-lg border border-amber-700/60 bg-amber-950/40 text-amber-300 text-xs px-3 py-2"></div>
-  </div>
-
-  <!-- ================= MAIN GRID ================= -->
-  <main class="max-w-[1500px] mx-auto px-5 py-4 grid gap-4 lg:grid-cols-[320px_minmax(0,1fr)_minmax(0,1fr)]">
-
-    <!-- ---------- LEFT: CONTROL & TRIAGE ---------- -->
-    <section class="rounded-xl border border-slate-800 bg-slate-900/50 p-4 flex flex-col gap-4 h-fit">
-      <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-400">Control &amp; Triage</h2>
-
-      <button id="btnAuto"
-        class="w-full rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 disabled:cursor-progress
-               text-white font-semibold text-sm px-3 py-2.5 transition">
-        ⚡ Auto-Triage &amp; Investigate Worst Offender
-      </button>
-
-      <div class="space-y-2">
-        <label class="text-xs text-slate-500 uppercase tracking-wide">Target User ID</label>
-        <div class="flex gap-2">
-          <input id="inpTarget" type="text" placeholder="USR-402" spellcheck="false"
-            class="flex-1 min-w-0 rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-sm
-                   text-slate-100 placeholder-slate-600 focus:outline-none focus:border-cyan-600" />
-          <button id="btnTarget"
-            class="rounded-lg bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-slate-100
-                   text-sm font-semibold px-3 py-2 transition whitespace-nowrap">Investigate</button>
-        </div>
-      </div>
-
-      <div class="space-y-2">
-        <div class="flex items-center justify-between">
-          <label class="text-xs text-slate-500 uppercase tracking-wide">Suspicious Users</label>
-          <button id="btnRefresh" class="text-xs text-cyan-500 hover:text-cyan-400">refresh</button>
-        </div>
-        <ul id="suspList" class="space-y-1.5">
-          <li class="text-xs text-slate-600">loading…</li>
-        </ul>
-      </div>
-
-      <p class="text-[11px] text-slate-600 leading-relaxed">
-        Click any user to launch a deep-dive. Auto-triage picks the highest anomaly score.
-      </p>
-    </section>
-
-    <!-- ---------- MIDDLE: AUDIT TRACE ---------- -->
-    <section class="rounded-xl border border-slate-800 bg-slate-900/50 p-4 flex flex-col gap-3 min-h-[520px]">
-      <div class="flex items-center justify-between">
-        <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-400">Investigation Audit Trace</h2>
-        <span id="runSource" class="text-[11px] font-mono text-slate-600"></span>
-      </div>
-
-      <!-- stepper -->
-      <div id="stepper" class="grid grid-cols-5 gap-1.5 text-center">
-        <!-- filled by JS -->
-      </div>
-
-      <!-- terminal -->
-      <div id="terminal"
-        class="flex-1 rounded-lg bg-slate-950 border border-slate-800 p-3 overflow-y-auto max-h-[520px]
-               font-mono text-xs text-slate-400">
-        <div class="text-slate-600">// idle — launch an investigation from the left panel</div>
-      </div>
-    </section>
-
-    <!-- ---------- RIGHT: EXECUTIVE FINDINGS ---------- -->
-    <section class="rounded-xl border border-slate-800 bg-slate-900/50 p-4 flex flex-col gap-4 min-h-[520px]">
-      <h2 class="text-xs font-semibold uppercase tracking-widest text-slate-400">Executive Findings</h2>
-
-      <div id="threatBadge" class="rounded-lg border border-slate-800 bg-slate-950 p-3">
-        <div class="text-xs uppercase tracking-widest text-slate-500">Threat Attribution</div>
-        <div class="mt-1 text-lg font-bold text-slate-500">awaiting investigation…</div>
-      </div>
-
-      <div id="metrics" class="grid grid-cols-3 gap-2"></div>
-
-      <div class="flex items-center justify-between mt-1">
-        <h3 class="text-xs font-semibold uppercase tracking-widest text-slate-400">Incident Report</h3>
-        <button id="btnCopy" disabled
-          class="text-xs rounded-md bg-slate-700 hover:bg-slate-600 disabled:opacity-40 text-slate-100 px-2.5 py-1 transition">
-          Copy Report
-        </button>
-      </div>
-      <div id="report"
-        class="flex-1 rounded-lg bg-slate-950 border border-slate-800 p-3 overflow-y-auto max-h-[600px]">
-        <p class="text-slate-600 text-sm">No report yet.</p>
-      </div>
-    </section>
-  </main>
-
-  <div id="toast"
-    class="hidden fixed bottom-5 left-1/2 -translate-x-1/2 z-30 px-4 py-2 rounded-lg
-           bg-slate-800 border border-slate-700 text-sm text-slate-100 shadow-xl"></div>
-
-<script type="module" src="./app.js"></script>
+<body class="app">
+  <div id="root"></div>
+<script type="module" src="./app.jsx"></script>
 </body>
 </html>
