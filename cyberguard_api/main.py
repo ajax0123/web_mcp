@@ -281,6 +281,11 @@ app = FastAPI(
     redoc_url=_settings.redoc_url,
 )
 
+from cyberguard_api.security_routes import admin_router, public_router
+
+app.include_router(public_router)
+app.include_router(admin_router)
+
 
 class AdminLoginRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=128)

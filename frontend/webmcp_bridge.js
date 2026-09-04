@@ -179,6 +179,21 @@ export const WEBMCP_TOOL_DEFS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "get_active_incidents",
+    description: "Returns incidents created by CyberGuard login security analysis.",
+    inputSchema: { type: "object", properties: {}, required: [], additionalProperties: false },
+  },
+  {
+    name: "get_incident_details",
+    description: "Returns evidence and containment state for an incident.",
+    inputSchema: { type: "object", properties: { incident_id: { type: "string", minLength: 2, maxLength: 128 } }, required: ["incident_id"], additionalProperties: false },
+  },
+  {
+    name: "get_access_control_status",
+    description: "Returns the application-level access state for a user.",
+    inputSchema: { type: "object", properties: { user_id: { ...USER_ID_SCHEMA } }, required: ["user_id"], additionalProperties: false },
+  },
 ];
 
 /** @type {string[]} */
@@ -200,6 +215,9 @@ export const DEFAULT_ROUTES = {
     path: "/api/v1/reports/incident",
     sideEffect: true,
   },
+  get_active_incidents: { method: "GET", path: "/api/v1/incidents" },
+  get_incident_details: { method: "GET", path: "/api/v1/incidents/{incident_id}" },
+  get_access_control_status: { method: "GET", path: "/api/v1/users/{user_id}/access-control" },
 };
 
 /** @param {string} name */
@@ -598,6 +616,10 @@ export class CyberGuardFallbackClient {
       recommendations,
     });
   }
+
+  getActiveIncidents() { return this.callTool("get_active_incidents", {}); }
+  getIncidentDetails(incidentId) { return this.callTool("get_incident_details", { incident_id: incidentId }); }
+  getAccessControlStatus(userId) { return this.callTool("get_access_control_status", { user_id: userId }); }
 
   /* ---- high-level orchestration ---- */
 

@@ -26,3 +26,4 @@ env/
 # --- OS / editor cruft ---
 .DS_Store
 *.swp
+.env.example

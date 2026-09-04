@@ -51,6 +51,7 @@ from cyberguard_api.gateway import get_settings, require_api_key
 from cyberguard_api.observability import sanitized_error
 from cyberguard_api.services import telemetry as _tele
 from cyberguard_api.services.telemetry import MOCK_TELEMETRY
+from cyberguard_api.services import security_decision_engine as _security_engine
 
 # Bounded free-text: at most 500 chars per recommendation, 1-25 items (PP-M2 / PP-M3).
 RecommendationStr = Annotated[str, StringConstraints(min_length=3, max_length=500)]
@@ -509,6 +510,24 @@ def webmcp_incident_report(req: IncidentRequest) -> dict[str, Any]:
     )
 
 
+@router.get("/incidents")
+def webmcp_active_incidents() -> dict[str, Any]:
+    return {"incidents": _security_engine.list_incidents()}
+
+
+@router.get("/incidents/{incident_id}")
+def webmcp_incident_details(incident_id: str) -> dict[str, Any]:
+    incident = _security_engine.get_incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return incident
+
+
+@router.get("/users/{user_id}/access-control")
+def webmcp_access_control_status(user_id: str) -> dict[str, Any]:
+    return _security_engine.access_status(user_id)
+
+
 @router.post("/agent/investigate")
 async def webmcp_agent_investigate(
     req: AgentInvestigateRequest | None = Body(default=None),
@@ -554,6 +573,18 @@ def webmcp_manifest() -> dict[str, Any]:
             "generate_incident_report": {
                 "method": "POST",
                 "path": "/api/v1/reports/incident",
+            },
+            "get_active_incidents": {
+                "method": "GET",
+                "path": "/api/v1/incidents",
+            },
+            "get_incident_details": {
+                "method": "GET",
+                "path": "/api/v1/incidents/{incident_id}",
+            },
+            "get_access_control_status": {
+                "method": "GET",
+                "path": "/api/v1/users/{user_id}/access-control",
             },
         },
         "orchestration": {
