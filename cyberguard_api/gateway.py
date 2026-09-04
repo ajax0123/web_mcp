@@ -54,6 +54,13 @@ except Exception:  # pragma: no cover - only if the dep is missing
 
 _LOG = logging.getLogger("cyberguard.gateway")
 
+# FE-2: hackathon demo fallback. When ADMIN_PASSWORD_HASH is unset AND the process
+# is not in production, the admin console accepts these well-known credentials so
+# judges can reach the investigation workspace without provisioning a hash. A loud
+# warning is logged at startup (main.lifespan). NEVER active when APP_ENV=production.
+DEV_ADMIN_USERNAME = "admin"
+DEV_ADMIN_PASSWORD = "demo1234"  # noqa: S105 - documented non-secret demo default
+
 # Docs endpoints need a looser CSP than the JSON API (Swagger UI pulls its
 # bundle from jsdelivr and uses inline styles).
 DOCS_PATHS = ("/docs", "/redoc", "/openapi.json")
@@ -90,8 +97,11 @@ class Settings(BaseSettings):
     # ASGI request-body cap in bytes (M-11). 0 disables the check.
     max_body_bytes: int = 1_000_000
 
-    # slowapi limit string, e.g. "60/minute", "1000/hour".
-    rate_limit: str = "60/minute"
+    # slowapi limit string, e.g. "60/minute", "1000/hour". Blank -> env-aware
+    # default via `effective_rate_limit`: 600/minute in dev (RL-1 — headroom for
+    # the dashboard's 5s status polling so a live demo never 429s), 60/minute in
+    # production. Set RATE_LIMIT explicitly to override anywhere.
+    rate_limit: str = ""
     rate_limit_enabled: bool = True
     # "memory://" (default, per-process) or e.g. "redis://localhost:6379/1".
     rate_limit_storage_uri: str = "memory://"
@@ -124,6 +134,24 @@ class Settings(BaseSettings):
     @property
     def api_key_set(self) -> frozenset[str]:
         return frozenset(_split_csv(self.api_keys))
+
+    @property
+    def effective_rate_limit(self) -> str:
+        """RL-1: env-aware default when RATE_LIMIT is unset."""
+        explicit = self.rate_limit.strip()
+        if explicit:
+            return explicit
+        return "60/minute" if self.is_production else "600/minute"
+
+    @property
+    def admin_auth_configured(self) -> bool:
+        return bool(self.admin_username and self.admin_password_hash)
+
+    @property
+    def dev_admin_fallback_enabled(self) -> bool:
+        """FE-2: accept the built-in demo admin login when no hash is configured
+        and this is not production. Lets a live demo reach the dashboard."""
+        return (not self.is_production) and not self.admin_auth_configured
 
     @property
     def trusted_proxies(self) -> tuple[ipaddress._BaseNetwork, ...]:
@@ -181,15 +209,27 @@ def _verify_password(password: str, encoded_hash: str) -> bool:
         return False
 
 
+def _new_admin_session() -> str:
+    settings = get_settings()
+    session_id = secrets.token_urlsafe(32)
+    _AUTH_SESSIONS[session_id] = time.time() + max(60, settings.auth_session_ttl_seconds)
+    return session_id
+
+
 def authenticate_admin(username: str, password: str) -> str | None:
     settings = get_settings()
+    # FE-2: dev/demo fallback when no admin hash is configured.
+    if settings.dev_admin_fallback_enabled:
+        if hmac.compare_digest(username, DEV_ADMIN_USERNAME) and hmac.compare_digest(
+            password, DEV_ADMIN_PASSWORD
+        ):
+            return _new_admin_session()
+        return None
     if not settings.admin_username or not settings.admin_password_hash:
         return None
     if not hmac.compare_digest(username, settings.admin_username) or not _verify_password(password, settings.admin_password_hash):
         return None
-    session_id = secrets.token_urlsafe(32)
-    _AUTH_SESSIONS[session_id] = time.time() + max(60, settings.auth_session_ttl_seconds)
-    return session_id
+    return _new_admin_session()
 
 
 def valid_session(session_id: str | None) -> bool:
@@ -359,9 +399,10 @@ def create_limiter(app: FastAPI, settings: Settings) -> None:
             "per-process memory store under-counts across workers (PP-M4)."
         )
 
+    limit = settings.effective_rate_limit
     limiter = Limiter(
         key_func=lambda request: client_ip(request, settings),
-        default_limits=[settings.rate_limit],
+        default_limits=[limit],
         storage_uri=settings.rate_limit_storage_uri,
         headers_enabled=True,
     )
@@ -369,7 +410,7 @@ def create_limiter(app: FastAPI, settings: Settings) -> None:
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     _LOG.info(
         "rate limiting enabled: %s (store=%s)",
-        settings.rate_limit,
+        limit,
         settings.rate_limit_storage_uri,
     )
 

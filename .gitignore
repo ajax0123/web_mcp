@@ -7,6 +7,10 @@ __pycache__/
 .ruff_cache/
 build/
 dist/
+# FE-1: the frontend production bundle IS committed so `python3 serve.py 5173`
+# works with no npm / Vite. Rebuild with `cd frontend && npm run build`.
+!frontend/dist/
+!frontend/dist/**
 
 # --- Dependency lock: regenerated per build (scripts/lock.sh); the intentionally
 #     committed one is requirements.committed.lock (CI diffs against it). ---
@@ -27,3 +31,7 @@ env/
 .DS_Store
 *.swp
 .env.example
+# FE-1: frontend build deps are NOT committed (were an incomplete, platform-
+# specific snapshot). `cd frontend && npm install` to get `npm run dev`; the
+# committed frontend/dist/ bundle is what `serve.py` needs and needs no install.
+frontend/node_modules/

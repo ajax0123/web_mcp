@@ -805,6 +805,15 @@ function clientRecommendations(attack, risk, telemetry) {
   return recs;
 }
 
+/** GR-1: origin description must agree with the IP count — never "Single origin" when >1 IP. */
+function originNote(nIps, geo) {
+  if (Number(nIps) > 1) {
+    const note = `Multiple origins on record (${nIps} unique IPs)`;
+    return geo ? `${note}; geo_velocity_violation flag set` : note;
+  }
+  return geo ? "geo_velocity_violation flag set" : "Single origin on record";
+}
+
 function renderIncidentMarkdown(userId, telemetry, risk, attack, incident) {
   const t = telemetry || {};
   const anomaly = t.anomaly_score ?? 0;
@@ -833,9 +842,10 @@ function renderIncidentMarkdown(userId, telemetry, risk, attack, incident) {
         ? "Failed + successful events both present"
         : "Failures only"
     } |`,
-    `| Unique Source IPs | ${ipCount} — ${ips.join(", ") || "n/a"} | ${
-      t.geo_velocity_violation ? "geo_velocity_violation flag set" : "Single origin on record"
-    } |`,
+    `| Unique Source IPs | ${ipCount} — ${ips.join(", ") || "n/a"} | ${originNote(
+      ipCount,
+      Boolean(t.geo_velocity_violation)
+    )} |`,
     `| Device Changes | ${t.device_changes} | ${
       (t.device_changes ?? 0) > 0 ? "New unrecognised fingerprint" : "Stable"
     } |`,

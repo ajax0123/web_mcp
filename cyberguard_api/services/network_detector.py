@@ -22,6 +22,7 @@ Audit fixes applied here:
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import threading
@@ -30,6 +31,8 @@ from pathlib import Path
 import pandas as pd
 
 from cyberguard_api.services.model_loader import load_verified
+
+_LOG = logging.getLogger("cyberguard.network_detector")
 
 # ================================================================
 # PATHS / CONSTANTS
@@ -198,12 +201,15 @@ def load_network_models(*, force: bool = False) -> None:
             _LOADED = False
             raise
 
-    print("========================================")
-    print("CyberGuard Network Detector loaded")
-    print(f"  features        : {len(NETWORK_FEATURES)}")
-    print(f"  classes         : {len(CLASS_NAMES)} -> {CLASS_NAMES}")
-    print(f"  bot threshold   : {BOT_SPECIALIST_THRESHOLD}")
-    print("========================================")
+    _LOG.info(
+        "network detector loaded",
+        extra={
+            "features": len(NETWORK_FEATURES),
+            "classes": len(CLASS_NAMES),
+            "class_names": CLASS_NAMES,
+            "bot_specialist_threshold": BOT_SPECIALIST_THRESHOLD,
+        },
+    )
 
 
 def _ensure_loaded() -> None:
@@ -283,7 +289,10 @@ def _validate_flow(flow_data: dict) -> dict[str, float]:
 
     unexpected = [k for k in flow_data if k not in NETWORK_FEATURES]
     if unexpected:
-        print("Warning: ignoring unexpected input features: " + ", ".join(map(str, unexpected)))
+        _LOG.warning(
+            "ignoring unexpected input features",
+            extra={"unexpected_features": [str(k) for k in unexpected]},
+        )
 
     cleaned: dict[str, float] = {}
     errors: dict[str, str] = {}

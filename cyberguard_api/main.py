@@ -221,6 +221,15 @@ async def lifespan(app: FastAPI):
             "(and CORS_ORIGINS) before starting the service."
         )
 
+    # FE-2: warn loudly when the built-in demo admin login is active.
+    if _settings.dev_admin_fallback_enabled:
+        logger.warning(
+            "ADMIN_PASSWORD_HASH is unset and APP_ENV=%s — the dashboard admin "
+            "console accepts the DEMO login 'admin' / 'demo1234'. Set "
+            "ADMIN_USERNAME + ADMIN_PASSWORD_HASH before any non-dev deploy.",
+            _settings.app_env,
+        )
+
     # PP-C2: a production process must not run on the two-record demo store.
     _telemetry.verify_store_config()
     _telemetry.get_store()  # bind + log the backend now, not on first request
@@ -294,7 +303,9 @@ class AdminLoginRequest(BaseModel):
 
 @app.post("/api/auth/login")
 async def admin_login(payload: AdminLoginRequest, response: Response) -> dict[str, str]:
-    if not _settings.admin_username or not _settings.admin_password_hash:
+    # FE-2: 503 only when auth is genuinely unavailable — i.e. no hash configured
+    # AND the dev demo fallback ('admin' / 'demo1234') is not in effect.
+    if not _settings.admin_auth_configured and not _settings.dev_admin_fallback_enabled:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Administrator authentication is not configured.")
     session_id = authenticate_admin(payload.username, payload.password)
     if not session_id:
@@ -308,7 +319,11 @@ async def admin_login(payload: AdminLoginRequest, response: Response) -> dict[st
 
 @app.get("/api/auth/me")
 async def admin_session(request: Request) -> dict[str, bool]:
-    return {"authenticated": valid_session(request.cookies.get("cyberguard_session"))}
+    # `demo_login` lets the dashboard prefill + hint the built-in credentials (FE-2).
+    return {
+        "authenticated": valid_session(request.cookies.get("cyberguard_session")),
+        "demo_login": _settings.dev_admin_fallback_enabled,
+    }
 
 
 @app.post("/api/auth/logout")

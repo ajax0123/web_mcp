@@ -36,6 +36,7 @@ it never executes remediation.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -52,6 +53,8 @@ from cyberguard_api.observability import sanitized_error
 from cyberguard_api.services import telemetry as _tele
 from cyberguard_api.services.telemetry import MOCK_TELEMETRY
 from cyberguard_api.services import security_decision_engine as _security_engine
+
+_LOG = logging.getLogger("cyberguard.webmcp")
 
 # Bounded free-text: at most 500 chars per recommendation, 1-25 items (PP-M2 / PP-M3).
 RecommendationStr = Annotated[str, StringConstraints(min_length=3, max_length=500)]
@@ -123,7 +126,7 @@ def configure_cors(app: FastAPI, extra_origins: list[str] | None = None) -> list
         source = "DEFAULT_DEV_ORIGINS fallback — set CORS_ORIGINS for production"
     if "*" in origins:
         raise RuntimeError("wildcard CORS origin is not allowed with credentials")
-    print(f"[cors] allow_origins ({source}): {origins}")
+    _LOG.info("cors allow_origins configured", extra={"origins": origins, "source": source})
 
     app.add_middleware(
         CORSMiddleware,

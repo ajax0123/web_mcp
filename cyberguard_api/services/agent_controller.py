@@ -278,12 +278,28 @@ def _recommendations(
     return recs
 
 
+def _origin_note(n_ips: int, geo: bool) -> str:
+    """
+    GR-1: origin description must agree with the IP count. Never claim "Single
+    origin" when more than one distinct source IP is on the record.
+    """
+    if n_ips > 1:
+        note = f"Multiple origins on record ({n_ips} unique IPs)"
+        return f"{note}; geo_velocity_violation flag set" if geo else note
+    if geo:
+        return "geo_velocity_violation flag set"
+    return "Single origin on record"
+
+
 def _narrative(telemetry: dict[str, Any], attack: dict[str, Any]) -> str:
     """
     Factual, count-based narrative (L-4). No invented timing windows ("in a
     short window", "during the burst") and no intent claims ("consistent with
     automated credential guessing", "credentials are compromised") — only what
     the telemetry record actually carries. IPs are the masked sample (C-5).
+
+    GR-2: steps are numbered dynamically from the ones actually emitted, so a
+    skipped conditional step never leaves a gap (1, 2, 5, 6 ...).
     """
     failed = int(telemetry.get("failed_logins", 0) or 0)
     success = int(telemetry.get("successful_logins", 0) or 0)
@@ -294,31 +310,31 @@ def _narrative(telemetry: dict[str, Any], attack: dict[str, Any]) -> str:
     anom = telemetry.get("anomaly_score")
 
     steps = [
-        f"1. Telemetry records {failed} failed and {success} successful authentication "
+        f"Telemetry records {failed} failed and {success} successful authentication "
         f"event(s) for this account. The store carries counts only — no per-event "
         f"timestamps, so no time window is asserted.",
-        f"2. Distinct source IPs on the record: {n_ips}"
+        f"Distinct source IPs on the record: {n_ips}"
         + (f" (masked sample: {', '.join(ips_masked)})." if ips_masked else ".")
         + (" geo_velocity_violation is set on the record." if geo else ""),
     ]
     if success and failed:
         steps.append(
-            f"3. Both failed ({failed}) and successful ({success}) events are present; "
+            f"Both failed ({failed}) and successful ({success}) events are present; "
             f"the successful session is treated as suspect pending analyst review."
         )
     if dev:
         steps.append(
-            f"4. device_changes = {dev} on the record (a new or changed device fingerprint)."
+            f"device_changes = {dev} on the record (a new or changed device fingerprint)."
         )
     steps.append(
-        f"5. Classifier attribution: {attack.get('classified_pattern')} "
+        f"Classifier attribution: {attack.get('classified_pattern')} "
         f"(MITRE {attack.get('mitre_technique_id') or 'n/a'}, "
         f"{round(float(attack.get('confidence', 0)) * 100)}% confidence). "
         f"{attack.get('signature_details', '')}"
     )
     if anom is not None:
-        steps.append(f"6. Anomaly-detector score on the record: {anom}.")
-    return "\n".join(steps)
+        steps.append(f"Anomaly-detector score on the record: {anom}.")
+    return "\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1))
 
 
 def _render_markdown(
@@ -350,7 +366,7 @@ def _render_markdown(
         f"| Failed vs Successful Logins | {telemetry.get('failed_logins')} / {telemetry.get('successful_logins')} | "
         f"{'Failed + successful events both present' if telemetry.get('successful_logins', 0) >= 1 and telemetry.get('failed_logins', 0) >= 10 else 'Failures only'} |",
         f"| Unique Source IPs | {n_ips} — {', '.join(ips_masked) or 'n/a'} | "
-        f"{'geo_velocity_violation flag set' if telemetry.get('geo_velocity_violation') else 'Single origin on record'} |",
+        f"{_origin_note(n_ips, bool(telemetry.get('geo_velocity_violation')))} |",
         f"| Device Changes | {telemetry.get('device_changes')} | "
         f"{'New unrecognised fingerprint' if telemetry.get('device_changes', 0) > 0 else 'Stable'} |",
         "",
