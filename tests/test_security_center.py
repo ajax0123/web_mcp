@@ -40,7 +40,7 @@ def test_high_risk_login_creates_incident_and_demo_containment():
 
 
 def test_contained_user_is_denied_on_next_login():
-    result = engine.assess_login({
+    engine.assess_login({
         "user_id": "TEST-CONTAINED",
         "login_successful": True,
         "failed_logins": 30,

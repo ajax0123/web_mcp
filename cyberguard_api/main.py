@@ -107,7 +107,7 @@ async def _run_inference(fn, *args):
             "inference saturated",
             status_code=503,
             client_message="Inference capacity exhausted, retry shortly",
-        )
+        ) from None
 
     fut = loop.run_in_executor(INFERENCE_POOL, fn, *args)
     released = False
@@ -184,9 +184,6 @@ def _reject_bad_batch(items: list, noun: str) -> None:
 from cyberguard_api.security.auth_defense.integration import (
     create_auth_defense_middleware,
     AuthDefenseConfig,
-)
-from cyberguard_api.security.auth_defense import (
-    telemetry_manager,
 )
 from cyberguard_api.security.init_security import (
     initialize_security_architecture,
@@ -674,7 +671,7 @@ def _score_login_events(events: List[LoginEvent]) -> List[AttackAnalysisResult]:
 
     threshold = LOGIN_THRESHOLD
     out: List[AttackAnalysisResult] = []
-    for event, score in zip(events, attack_scores):
+    for event, score in zip(events, attack_scores, strict=False):
         score = float(score)
         out.append(
             AttackAnalysisResult(
@@ -702,7 +699,7 @@ async def analyze_ip(events: List[LoginEvent]):
     except HTTPException:
         raise
     except Exception as e:
-        raise _sanitized_500("login attack analysis", e)
+        raise _sanitized_500("login attack analysis", e) from e
 
 
 # ================================================================
@@ -730,7 +727,7 @@ def _score_behaviour(users: List[UserBehaviorInput]) -> List[UserBehaviorResult]
             anomaly_score=round(float(-raw_score), 4),  # higher = more anomalous
             is_anomaly=(label == -1),
         )
-        for user, raw_score, label in zip(users, raw_scores, labels)
+        for user, raw_score, label in zip(users, raw_scores, labels, strict=False)
     ]
 
 
@@ -747,7 +744,7 @@ async def get_user_risk_score(users: List[UserBehaviorInput]):
     except HTTPException:
         raise
     except Exception as e:
-        raise _sanitized_500("behavioural anomaly analysis", e)
+        raise _sanitized_500("behavioural anomaly analysis", e) from e
 
 
 # ================================================================
@@ -767,14 +764,14 @@ async def detect_attack_pattern_endpoint(request: NetworkFlowInput):
         # Strict schema validation rejected the payload (M-11): malformed,
         # non-numeric, non-finite, or missing features. Caller-supplied
         # validation feedback, not internal state.
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
     except (ModelIntegrityError, RuntimeError) as e:
         logger.warning("network models unavailable: %s", e)
-        raise HTTPException(status_code=503, detail=_MODELS_UNAVAILABLE_DETAIL)
+        raise HTTPException(status_code=503, detail=_MODELS_UNAVAILABLE_DETAIL) from e
 
     except Exception as e:
-        raise _sanitized_500("network attack detection", e)
+        raise _sanitized_500("network attack detection", e) from e
 
 
 # ================================================================

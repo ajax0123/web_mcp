@@ -65,7 +65,6 @@ def assess_login(event: dict[str, Any]) -> dict[str, Any]:
         existing = telemetry.get_user(user_id) or {}
         contained = _access_state.get(user_id, {}).get("status") == "DEMO_CONTAINED"
         failed = int(event.get("failed_logins", existing.get("failed_logins", 0)) or 0)
-        successful = int(event.get("successful_logins", existing.get("successful_logins", 0)) or 0)
         anomaly = float(event.get("anomaly_score", existing.get("anomaly_score", 0.0)) or 0.0)
         ip_count = int(event.get("unique_ip_count", len(event.get("unique_ips", existing.get("unique_ips", [])) or [])) or 0)
         device_changed = bool(event.get("device_changed", event.get("new_device", existing.get("device_changes", 0) > 0)))
@@ -87,16 +86,23 @@ def assess_login(event: dict[str, Any]) -> dict[str, Any]:
         else:
             status, access, action = _status(score)
         evidence = []
-        if failed: evidence.append(f"{failed} failed login attempts on record")
-        if device_changed: evidence.append("Login from a previously unseen device")
-        if ip_count > 1: evidence.append(f"Authentication associated with {ip_count} source IP addresses")
-        if location_changed: evidence.append("Unusual location or impossible-travel signal")
-        if unusual_hour: evidence.append("Unusual login hour")
-        if anomaly >= 0.5: evidence.append(f"Behavior anomaly score is elevated ({anomaly:.2f})")
+        if failed:
+            evidence.append(f"{failed} failed login attempts on record")
+        if device_changed:
+            evidence.append("Login from a previously unseen device")
+        if ip_count > 1:
+            evidence.append(f"Authentication associated with {ip_count} source IP addresses")
+        if location_changed:
+            evidence.append("Unusual location or impossible-travel signal")
+        if unusual_hour:
+            evidence.append("Unusual login hour")
+        if anomaly >= 0.5:
+            evidence.append(f"Behavior anomaly score is elevated ({anomaly:.2f})")
         result = {"user_id": user_id, "session_id": f"SESSION-{uuid.uuid4().hex[:10].upper()}", "status": status, "risk_score": score, "risk_level": _risk_level(score), "attack_type": attack_type, "model_score": round(model_score, 4) if model_score is not None else None, "model_signal": round(attack_score, 4), "model_source": "provided_model_output" if model_score is not None else "deterministic_rule_fallback", "anomaly_score": round(anomaly, 4), "confidence": round(max(0.0, min(1.0, 0.5 + abs(score - 50) / 100)), 4), "recommended_action": action, "access_decision": access, "login_allowed": access == "ALLOWED", "evidence": evidence or ["No elevated security indicators detected"], "risk_signal_contribution": {name: round(signals[name] * RISK_WEIGHTS[name] * 100) for name in signals}, "created_at": _now()}
         _login_events.append({**event, **result})
         _audit("LOGIN_DETECTED", user_id, "system", attack_type, risk_score=score)
-        if status == "SAFE": _audit("LOGIN_ALLOWED", user_id, "system", "Risk below review threshold", risk_score=score)
+        if status == "SAFE":
+            _audit("LOGIN_ALLOWED", user_id, "system", "Risk below review threshold", risk_score=score)
         else:
             if contained:
                 existing_incident = next((item for item in _incidents.values() if item["user_id"] == user_id and item["containment_status"] == "DEMO_CONTAINED"), None)
@@ -119,11 +125,13 @@ def create_incident(assessment: dict[str, Any], actor: str = "system") -> dict[s
 
 
 def list_incidents() -> list[dict[str, Any]]:
-    with _lock: return list(reversed(list(_incidents.values())))
+    with _lock:
+        return list(reversed(list(_incidents.values())))
 
 
 def get_incident(incident_id: str) -> dict[str, Any] | None:
-    with _lock: return _incidents.get(incident_id)
+    with _lock:
+        return _incidents.get(incident_id)
 
 
 def list_events() -> list[dict[str, Any]]:
@@ -144,8 +152,10 @@ def deny_access(user_id: str, actor: str, reason: str | None = None) -> dict[str
         if not demo_mode_enabled():
             raise RuntimeError("Demo containment is disabled")
         incident = next((item for item in _incidents.values() if item["user_id"] == user_id and item["status"] == "ACTIVE"), None)
-        if not incident: raise KeyError("active incident not found")
-        if _access_state.get(user_id, {}).get("status") == "DEMO_CONTAINED": raise RuntimeError("user is already demo-contained")
+        if not incident:
+            raise KeyError("active incident not found")
+        if _access_state.get(user_id, {}).get("status") == "DEMO_CONTAINED":
+            raise RuntimeError("user is already demo-contained")
         _access_state[user_id] = {"status": "DEMO_CONTAINED", "incident_id": incident["incident_id"], "updated_at": _now()}
         incident.update({"status": "CONTAINED", "updated_at": _now(), "containment_status": "DEMO_CONTAINED"})
         _audit("ACCESS_DENIED_DEMO", user_id, actor, reason or incident["attack_type"], incident_id=incident["incident_id"], risk_score=incident["risk_score"], mode="DEMO")
@@ -153,7 +163,8 @@ def deny_access(user_id: str, actor: str, reason: str | None = None) -> dict[str
 
 
 def access_status(user_id: str) -> dict[str, Any]:
-    with _lock: return {"user_id": user_id, **_access_state.get(user_id, {"status": "ACTIVE"})}
+    with _lock:
+        return {"user_id": user_id, **_access_state.get(user_id, {"status": "ACTIVE"})}
 
 
 def restore_access(user_id: str, actor: str) -> dict[str, Any]:
@@ -167,7 +178,8 @@ def restore_access(user_id: str, actor: str) -> dict[str, Any]:
 
 
 def audit_events() -> list[dict[str, Any]]:
-    with _lock: return list(reversed(_audit_log))
+    with _lock:
+        return list(reversed(_audit_log))
 
 
 def security_center_summary() -> dict[str, Any]:
